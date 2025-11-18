@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -151,4 +152,20 @@ func ValidateJWT(tokenString string) (*Claims, error) {
 // GetOTPQRCodeURL 获取OTP二维码URL
 func GetOTPQRCodeURL(secret, email string) string {
 	return fmt.Sprintf("otpauth://totp/%s:%s?secret=%s&issuer=%s", OTPIssuer, email, secret, OTPIssuer)
+}
+
+// IsAdminMode 检查是否启用管理员模式（从环境变量读取）
+func IsAdminMode() bool {
+	// 从环境变量读取，默认返回false（非管理员模式）
+	adminMode := os.Getenv("NOFX_ADMIN_MODE")
+	return adminMode == "true" || adminMode == "1"
+}
+
+// CheckAdminPassword 验证管理员密码（从环境变量读取）
+func CheckAdminPassword(password string) bool {
+	adminPassword := os.Getenv("NOFX_ADMIN_PASSWORD")
+	if adminPassword == "" {
+		return false // 未设置管理员密码，拒绝访问
+	}
+	return password == adminPassword
 }

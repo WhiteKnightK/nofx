@@ -47,13 +47,31 @@ export const api = {
   },
 
   async createTrader(request: CreateTraderRequest): Promise<TraderInfo> {
-    const res = await httpClient.post(
-      `${API_BASE}/traders`,
-      request,
-      getAuthHeaders()
-    )
-    if (!res.ok) throw new Error('创建交易员失败')
-    return res.json()
+    // 创建交易员可能需要较长时间（查询余额），设置3分钟超时
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 180000) // 3分钟
+    
+    try {
+      const res = await fetch(`${API_BASE}/traders`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(request),
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}))
+        throw new Error(errorData.error || '创建交易员失败')
+      }
+      return res.json()
+    } catch (error: any) {
+      clearTimeout(timeoutId)
+      if (error.name === 'AbortError') {
+        throw new Error('创建交易员超时，请稍后重试')
+      }
+      throw error
+    }
   },
 
   async deleteTrader(traderId: string): Promise<void> {
@@ -367,5 +385,239 @@ export const api = {
     const res = await httpClient.get(`${API_BASE}/server-ip`, getAuthHeaders())
     if (!res.ok) throw new Error('获取服务器IP失败')
     return res.json()
+  },
+
+  // 用户账户信息接口
+  async getUserAccount(): Promise<{
+    id: string
+    email: string
+    role: string
+    trader_id?: string
+    categories?: string[]
+  }> {
+    const res = await httpClient.get(`${API_BASE}/user/account`, getAuthHeaders())
+    if (!res.ok) throw new Error('获取用户账户信息失败')
+    return res.json()
+  },
+
+  // 分类管理接口
+  async getCategories(): Promise<any[]> {
+    const res = await httpClient.get(`${API_BASE}/categories`, getAuthHeaders())
+    if (!res.ok) throw new Error('获取分类列表失败')
+    const data = await res.json()
+    return data.categories || []
+  },
+
+  async createCategory(name: string, description?: string): Promise<any> {
+    const res = await httpClient.post(
+      `${API_BASE}/categories`,
+      { name, description: description || '' },
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('创建分类失败')
+    return res.json()
+  },
+
+  async updateCategory(
+    categoryId: number,
+    name: string,
+    description?: string
+  ): Promise<any> {
+    const res = await httpClient.put(
+      `${API_BASE}/categories/${categoryId}`,
+      { name, description: description || '' },
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('更新分类失败')
+    return res.json()
+  },
+
+  async deleteCategory(categoryId: number): Promise<void> {
+    const res = await httpClient.delete(
+      `${API_BASE}/categories/${categoryId}`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('删除分类失败')
+  },
+
+  // 创建交易员账号
+  async createTraderAccount(
+    traderId: string,
+    options: {
+      generate_random_email?: boolean
+      generate_random_password?: boolean
+      email?: string
+      password?: string
+    }
+  ): Promise<{
+    user_id: string
+    email: string
+    password: string
+    role: string
+    trader_id: string
+  }> {
+    const res = await httpClient.post(
+      `${API_BASE}/traders/${traderId}/create-account`,
+      options,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('创建交易员账号失败')
+    return res.json()
+  },
+
+  // 获取交易员账号信息
+  async getTraderAccount(traderId: string): Promise<{
+    account: {
+      user_id: string
+      email: string
+      created_at: string
+    } | null
+  }> {
+    const res = await httpClient.get(
+      `${API_BASE}/traders/${traderId}/account`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取交易员账号信息失败')
+    return res.json()
+  },
+
+  // 更新交易员账号密码
+  async updateTraderAccountPassword(
+    traderId: string,
+    password: string
+  ): Promise<{
+    message: string
+    password: string
+  }> {
+    const res = await httpClient.put(
+      `${API_BASE}/traders/${traderId}/account/password`,
+      { password },
+      getAuthHeaders()
+    )
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}))
+      throw new Error(errorData.error || '更新密码失败')
+    }
+    return res.json()
+  },
+
+  // 创建小组组长账号
+  async createGroupLeader(options: {
+    generate_random_email?: boolean
+    generate_random_password?: boolean
+    email?: string
+    password?: string
+    categories: string[]
+  }): Promise<{
+    user_id: string
+    email: string
+    password: string
+    role: string
+    categories: string[]
+  }> {
+    const res = await httpClient.post(
+      `${API_BASE}/group-leaders/create`,
+      options,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('创建小组组长账号失败')
+    return res.json()
+  },
+
+  // 为特定分类创建小组组长账号
+  async createGroupLeaderForCategory(options: {
+    generate_random_email?: boolean
+    generate_random_password?: boolean
+    email?: string
+    password?: string
+    category: string
+  }): Promise<{
+    user_id: string
+    email: string
+    password: string
+    role: string
+    categories: string[]
+  }> {
+    const res = await httpClient.post(
+      `${API_BASE}/group-leaders/create-for-category`,
+      options,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('创建小组组长账号失败')
+    return res.json()
+  },
+
+  // 获取小组组长列表
+  async getGroupLeaders(): Promise<Array<{
+    id: string
+    email: string
+    role: string
+    categories: string[]
+    trader_count: number
+    created_at: string
+  }>> {
+    const res = await httpClient.get(
+      `${API_BASE}/group-leaders`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取小组组长列表失败')
+    const data = await res.json()
+    return data.leaders || []
+  },
+
+  // 获取分类账号列表
+  async getCategoryAccounts(): Promise<Array<{
+    id: string
+    email: string
+    role: string
+    trader_id?: string
+    category: string
+    created_at: string
+  }>> {
+    const res = await httpClient.get(
+      `${API_BASE}/category-accounts`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取分类账号列表失败')
+    return res.json()
+  },
+
+  // 获取分类账号信息
+  async getCategoryAccountInfo(accountId: string): Promise<{
+    id: string
+    email: string
+    role: string
+    password?: string
+  }> {
+    const res = await httpClient.get(
+      `${API_BASE}/category-accounts/${accountId}`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取账号信息失败')
+    return res.json()
+  },
+
+  // 更新分类账号密码
+  async updateCategoryAccountPassword(accountId: string, newPassword: string): Promise<void> {
+    const res = await httpClient.put(
+      `${API_BASE}/category-accounts/${accountId}/password`,
+      { password: newPassword },
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('更新密码失败')
+  },
+
+  // 设置交易员分类
+  async setTraderCategory(traderId: string, category: string): Promise<any> {
+    const res = await httpClient.post(
+      `${API_BASE}/traders/${traderId}/category`,
+      { category },
+      getAuthHeaders()
+    )
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}))
+      throw new Error(errorData.error || '设置交易员分类失败')
+    }
+    return await res.json().catch(() => ({}))
   },
 }

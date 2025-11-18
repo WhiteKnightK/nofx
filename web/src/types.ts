@@ -94,6 +94,8 @@ export interface TraderInfo {
   custom_prompt?: string
   use_coin_pool?: boolean
   use_oi_top?: boolean
+  category?: string
+  owner_user_id?: string
 }
 
 export interface AIModel {

@@ -20,6 +20,14 @@ export class CryptoService {
   }
 
   private static async importPublicKey(pem: string): Promise<CryptoKey> {
+    // 检查 Web Crypto API 是否可用
+    if (!crypto || !crypto.subtle) {
+      throw new Error(
+        'Web Crypto API is not available. This feature requires HTTPS or localhost. ' +
+        'Current protocol: ' + window.location.protocol
+      )
+    }
+
     const pemHeader = '-----BEGIN PUBLIC KEY-----'
     const pemFooter = '-----END PUBLIC KEY-----'
     const headerIndex = pem.indexOf(pemHeader)
@@ -60,6 +68,14 @@ export class CryptoService {
     userId?: string,
     sessionId?: string
   ): Promise<EncryptedPayload> {
+    // 检查 Web Crypto API 是否可用
+    if (!crypto || !crypto.subtle) {
+      throw new Error(
+        'Web Crypto API is not available. This feature requires HTTPS or localhost. ' +
+        'Current protocol: ' + window.location.protocol
+      )
+    }
+
     if (!this.publicKey) {
       throw new Error(
         'Crypto service not initialized. Call initialize() first.'

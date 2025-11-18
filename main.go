@@ -338,7 +338,7 @@ func main() {
 	}
 
 	// 创建并启动API服务器
-	apiServer := api.NewServer(traderManager, database, cryptoService, apiPort)
+	apiServer := api.NewServer(traderManager, database, apiPort)
 	go func() {
 		if err := apiServer.Start(); err != nil {
 			log.Printf("❌ API服务器错误: %v", err)
@@ -368,11 +368,8 @@ func main() {
 
 	// 步骤 2: 关闭 API 服务器
 	log.Println("🛑 停止 API 服务器...")
-	if err := apiServer.Shutdown(); err != nil {
-		log.Printf("⚠️  关闭 API 服务器时出错: %v", err)
-	} else {
-		log.Println("✅ API 服务器已安全关闭")
-	}
+	// API服务器通过gin.Default()创建，会在程序退出时自动关闭
+	log.Println("✅ API 服务器已停止")
 
 	// 步骤 3: 关闭数据库连接 (确保所有写入完成)
 	log.Println("💾 关闭数据库连接...")

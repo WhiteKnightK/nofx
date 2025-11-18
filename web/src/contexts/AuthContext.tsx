@@ -5,6 +5,9 @@ import { reset401Flag } from '../lib/httpClient'
 interface User {
   id: string
   email: string
+  role?: string
+  trader_id?: string
+  categories?: string[]
 }
 
 interface AuthContextType {
@@ -70,7 +73,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const savedUser = localStorage.getItem('auth_user')
         if (savedToken && savedUser) {
           setToken(savedToken)
-          setUser(JSON.parse(savedUser))
+          const parsedUser = JSON.parse(savedUser)
+          setUser(parsedUser)
+
+          // 如果用户信息中没有role，尝试获取完整的用户信息
+          if (!parsedUser.role) {
+            fetch('/api/user/account', {
+              headers: {
+                Authorization: `Bearer ${savedToken}`,
+              },
+            })
+              .then((res) => res.json())
+              .then((userData) => {
+                const fullUserInfo = {
+                  id: userData.id,
+                  email: userData.email,
+                  role: userData.role || 'user',
+                  trader_id: userData.trader_id,
+                  categories: userData.categories || [],
+                }
+                setUser(fullUserInfo)
+                localStorage.setItem('auth_user', JSON.stringify(fullUserInfo))
+              })
+              .catch((err) => {
+                console.error('Failed to fetch user account info:', err)
+              })
+          }
         }
 
         setIsLoading(false)
@@ -83,7 +111,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (savedToken && savedUser) {
           setToken(savedToken)
-          setUser(JSON.parse(savedUser))
+          const parsedUser = JSON.parse(savedUser)
+          setUser(parsedUser)
+
+          // 如果用户信息中没有role，尝试获取完整的用户信息
+          if (!parsedUser.role) {
+            fetch('/api/user/account', {
+              headers: {
+                Authorization: `Bearer ${savedToken}`,
+              },
+            })
+              .then((res) => res.json())
+              .then((userData) => {
+                const fullUserInfo = {
+                  id: userData.id,
+                  email: userData.email,
+                  role: userData.role || 'user',
+                  trader_id: userData.trader_id,
+                  categories: userData.categories || [],
+                }
+                setUser(fullUserInfo)
+                localStorage.setItem('auth_user', JSON.stringify(fullUserInfo))
+              })
+              .catch((err) => {
+                console.error('Failed to fetch user account info:', err)
+              })
+          }
         }
         setIsLoading(false)
       })
@@ -108,6 +161,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (email: string, password: string) => {
     try {
+      console.log('Attempting login with:', email, password)
       const response = await fetch('/api/login', {
         method: 'POST',
         headers: {
@@ -117,8 +171,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })
 
       const data = await response.json()
+      console.log('Login response:', response.ok, response.status, data)
 
       if (response.ok) {
+        console.log('Response is OK, checking for token...')
+        // 如果返回了token，说明是创建的账号（group_leader或trader_account），直接登录成功
+        if (data.token) {
+          console.log('Token found, processing login...')
+          reset401Flag()
+          const userInfo = {
+            id: data.user_id,
+            email: data.email,
+            role: data.role,
+            trader_id: data.trader_id,
+            categories: data.categories || [],
+          }
+          setToken(data.token)
+          setUser(userInfo)
+          localStorage.setItem('auth_token', data.token)
+          localStorage.setItem('auth_user', JSON.stringify(userInfo))
+
+          // Check and redirect to returnUrl if exists
+          const returnUrl = sessionStorage.getItem('returnUrl')
+          if (returnUrl) {
+            sessionStorage.removeItem('returnUrl')
+            window.history.pushState({}, '', returnUrl)
+            window.dispatchEvent(new PopStateEvent('popstate'))
+          } else {
+            // trader_account 用户跳转到交易员列表页面
+            if (data.role === 'trader_account') {
+              window.history.pushState({}, '', '/traders')
+              window.dispatchEvent(new PopStateEvent('popstate'))
+            } else {
+              // 其他角色跳转到配置页面
+              window.history.pushState({}, '', '/config')
+              window.dispatchEvent(new PopStateEvent('popstate'))
+            }
+          }
+
+          return { success: true, message: data.message }
+        }
+
+        // 如果需要OTP验证（admin或user角色）
         if (data.requires_otp) {
           return {
             success: true,
@@ -127,13 +221,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             message: data.message,
           }
         }
+
+        // 如果既没有token也没有requires_otp，但响应是成功的，可能是其他情况
+        console.log('No token or OTP requirement found, returning success')
+        return { success: true, message: data.message }
       } else {
+        console.log('Response not OK, returning error:', data.error)
         return { success: false, message: data.error }
       }
     } catch (error) {
+      console.log('Login failed with exception:', error)
       return { success: false, message: '登录失败，请重试' }
     }
 
+    console.log('Reached end of function, returning unknown error')
     return { success: false, message: '未知错误' }
   }
 
@@ -236,11 +337,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         reset401Flag()
 
         // 登录成功，保存token和用户信息
-        const userInfo = { id: data.user_id, email: data.email }
+        // 需要获取完整的用户信息（包含role等）
+        const userInfo = {
+          id: data.user_id,
+          email: data.email,
+          role: data.role || 'user',
+        }
         setToken(data.token)
         setUser(userInfo)
         localStorage.setItem('auth_token', data.token)
         localStorage.setItem('auth_user', JSON.stringify(userInfo))
+
+        // 获取完整的用户信息（包含role、trader_id、categories）
+        try {
+          const userResponse = await fetch('/api/user/account', {
+            headers: {
+              Authorization: `Bearer ${data.token}`,
+            },
+          })
+          if (userResponse.ok) {
+            const userData = await userResponse.json()
+            const fullUserInfo = {
+              id: userData.id,
+              email: userData.email,
+              role: userData.role || 'user',
+              trader_id: userData.trader_id,
+              categories: userData.categories || [],
+            }
+            setUser(fullUserInfo)
+            localStorage.setItem('auth_user', JSON.stringify(fullUserInfo))
+          }
+        } catch (err) {
+          console.error('Failed to fetch user account info:', err)
+        }
 
         // Check and redirect to returnUrl if exists
         const returnUrl = sessionStorage.getItem('returnUrl')
@@ -280,11 +409,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         reset401Flag()
 
         // 注册完成，自动登录
-        const userInfo = { id: data.user_id, email: data.email }
+        const userInfo = {
+          id: data.user_id,
+          email: data.email,
+          role: 'user', // 注册的用户默认是user角色
+        }
         setToken(data.token)
         setUser(userInfo)
         localStorage.setItem('auth_token', data.token)
         localStorage.setItem('auth_user', JSON.stringify(userInfo))
+
+        // 获取完整的用户信息（包含role、trader_id、categories）
+        try {
+          const userResponse = await fetch('/api/user/account', {
+            headers: {
+              Authorization: `Bearer ${data.token}`,
+            },
+          })
+          if (userResponse.ok) {
+            const userData = await userResponse.json()
+            const fullUserInfo = {
+              id: userData.id,
+              email: userData.email,
+              role: userData.role || 'user',
+              trader_id: userData.trader_id,
+              categories: userData.categories || [],
+            }
+            setUser(fullUserInfo)
+            localStorage.setItem('auth_user', JSON.stringify(fullUserInfo))
+          }
+        } catch (err) {
+          console.error('Failed to fetch user account info:', err)
+        }
 
         // Check and redirect to returnUrl if exists
         const returnUrl = sessionStorage.getItem('returnUrl')

@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import { api } from './lib/api'
 import { EquityChart } from './components/EquityChart'
 import { AITradersPage } from './components/AITradersPage'
+import { CategoriesPage } from './components/CategoriesPage'
 import { LoginPage } from './components/LoginPage'
 import { RegisterPage } from './components/RegisterPage'
 import { ResetPasswordPage } from './components/ResetPasswordPage'
@@ -25,7 +26,7 @@ import type {
   TraderInfo,
 } from './types'
 
-type Page = 'competition' | 'traders' | 'trader'
+type Page = 'competition' | 'traders' | 'trader' | 'categories'
 
 // 获取友好的AI模型名称
 function getModelDisplayName(modelId: string): string {
@@ -53,6 +54,7 @@ function App() {
     const hash = window.location.hash.slice(1) // 去掉 #
 
     if (path === '/traders' || hash === 'traders') return 'traders'
+    if (path === '/categories' || hash === 'categories') return 'categories'
     if (path === '/dashboard' || hash === 'trader' || hash === 'details')
       return 'trader'
     return 'competition' // 默认为竞赛页面
@@ -70,6 +72,8 @@ function App() {
 
       if (path === '/traders' || hash === 'traders') {
         setCurrentPage('traders')
+      } else if (path === '/categories' || hash === 'categories') {
+        setCurrentPage('categories')
       } else if (
         path === '/dashboard' ||
         hash === 'trader' ||
@@ -326,6 +330,10 @@ function App() {
             window.history.pushState({}, '', '/traders')
             setRoute('/traders')
             setCurrentPage('traders')
+          } else if (page === 'categories') {
+            window.history.pushState({}, '', '/categories')
+            setRoute('/categories')
+            setCurrentPage('categories')
           } else if (page === 'trader') {
             window.history.pushState({}, '', '/dashboard')
             setRoute('/dashboard')
@@ -350,6 +358,8 @@ function App() {
               setCurrentPage('trader')
             }}
           />
+        ) : currentPage === 'categories' ? (
+          <CategoriesPage />
         ) : (
           <TraderDetailsPage
             selectedTrader={selectedTrader}

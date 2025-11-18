@@ -10,7 +10,7 @@ interface HeaderBarProps {
   currentPage?: string
   language?: Language
   onLanguageChange?: (lang: Language) => void
-  user?: { email: string } | null
+  user?: { email: string; role?: string; categories?: string[] } | null
   onLogout?: () => void
   onPageChange?: (page: string) => void
 }
@@ -170,6 +170,52 @@ export default function HeaderBar({
 
                     {t('configNav', language)}
                   </button>
+
+                  {/* 分类管理 - 仅对user和admin显示，小组组长和交易员看不到 */}
+                  {(user?.role === 'user' || user?.role === 'admin') && (
+                    <button
+                      onClick={() => {
+                        console.log(
+                          '分类管理 button clicked, onPageChange:',
+                          onPageChange
+                        )
+                        onPageChange?.('categories')
+                      }}
+                      className="text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500"
+                      style={{
+                        color:
+                          currentPage === 'categories'
+                            ? 'var(--brand-yellow)'
+                            : 'var(--brand-light-gray)',
+                        padding: '8px 16px',
+                        borderRadius: '8px',
+                        position: 'relative',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (currentPage !== 'categories') {
+                          e.currentTarget.style.color = 'var(--brand-yellow)'
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (currentPage !== 'categories') {
+                          e.currentTarget.style.color = 'var(--brand-light-gray)'
+                        }
+                      }}
+                    >
+                      {/* Background for selected state */}
+                      {currentPage === 'categories' && (
+                        <span
+                          className="absolute inset-0 rounded-lg"
+                          style={{
+                            background: 'rgba(240, 185, 11, 0.15)',
+                            zIndex: -1,
+                          }}
+                        />
+                      )}
+
+                      分类管理
+                    </button>
+                  )}
 
                   <button
                     onClick={() => {
@@ -695,6 +741,46 @@ export default function HeaderBar({
 
                 {t('configNav', language)}
               </button>
+
+              {/* 移动端分类管理 - 仅对user和admin显示，小组组长和交易员看不到 */}
+              {(user?.role === 'user' || user?.role === 'admin') && (
+                <button
+                  onClick={() => {
+                    console.log(
+                      '移动端 分类管理 button clicked, onPageChange:',
+                      onPageChange
+                    )
+                    onPageChange?.('categories')
+                    setMobileMenuOpen(false)
+                  }}
+                  className="block text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500 hover:text-yellow-500"
+                  style={{
+                    color:
+                      currentPage === 'categories'
+                        ? 'var(--brand-yellow)'
+                        : 'var(--brand-light-gray)',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    position: 'relative',
+                    width: '100%',
+                    textAlign: 'left',
+                  }}
+                >
+                  {/* Background for selected state */}
+                  {currentPage === 'categories' && (
+                    <span
+                      className="absolute inset-0 rounded-lg"
+                      style={{
+                        background: 'rgba(240, 185, 11, 0.15)',
+                        zIndex: -1,
+                      }}
+                    />
+                  )}
+
+                  分类管理
+                </button>
+              )}
+
               <button
                 onClick={() => {
                   console.log(

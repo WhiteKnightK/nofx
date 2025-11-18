@@ -194,6 +194,30 @@ func (d *Database) createTables() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
+		// 分类表（多用户观测系统）
+		`CREATE TABLE IF NOT EXISTS categories (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			owner_user_id TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+			UNIQUE(owner_user_id, name)
+		)`,
+
+		// 小组组长分类关联表（多用户观测系统）
+		`CREATE TABLE IF NOT EXISTS group_leader_categories (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			group_leader_id TEXT NOT NULL,
+			category TEXT NOT NULL,
+			owner_user_id TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (group_leader_id) REFERENCES users(id) ON DELETE CASCADE,
+			UNIQUE(group_leader_id, category)
+		)`,
+
 		// 触发器：自动更新 updated_at
 		`CREATE TRIGGER IF NOT EXISTS update_users_updated_at
 			AFTER UPDATE ON users
@@ -257,6 +281,13 @@ func (d *Database) createTables() error {
 		`ALTER TABLE traders ADD COLUMN system_prompt_template TEXT DEFAULT 'default'`, // 系统提示词模板名称
 		`ALTER TABLE ai_models ADD COLUMN custom_api_url TEXT DEFAULT ''`,              // 自定义API地址
 		`ALTER TABLE ai_models ADD COLUMN custom_model_name TEXT DEFAULT ''`,           // 自定义模型名称
+		// 多用户观测系统扩展字段
+		`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`,              // 用户角色: 'admin' | 'user' | 'group_leader' | 'trader_account'
+		`ALTER TABLE users ADD COLUMN trader_id TEXT DEFAULT NULL`,           // 交易员账号关联的交易员ID
+		`ALTER TABLE users ADD COLUMN category TEXT DEFAULT NULL`,            // 交易员账号的分类（冗余字段）
+		`ALTER TABLE traders ADD COLUMN category TEXT DEFAULT ''`,            // 交易员分类
+		`ALTER TABLE traders ADD COLUMN trader_account_id TEXT DEFAULT NULL`, // 关联的交易员账号用户ID
+		`ALTER TABLE traders ADD COLUMN owner_user_id TEXT DEFAULT NULL`,     // 创建该交易员的用户ID
 	}
 
 	for _, query := range alterQueries {
@@ -269,6 +300,24 @@ func (d *Database) createTables() error {
 	if err != nil {
 		log.Printf("⚠️ 迁移exchanges表失败: %v", err)
 	}
+
+	// 创建索引（多用户观测系统）
+	indexQueries := []string{
+		`CREATE INDEX IF NOT EXISTS idx_group_leader ON group_leader_categories(group_leader_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_category ON group_leader_categories(category)`,
+		`CREATE INDEX IF NOT EXISTS idx_owner_user ON group_leader_categories(owner_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_owner_user_categories ON categories(owner_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_traders_category ON traders(category)`,
+		`CREATE INDEX IF NOT EXISTS idx_traders_owner_user_id ON traders(owner_user_id)`,
+	}
+
+	for _, query := range indexQueries {
+		d.db.Exec(query)
+	}
+
+	// 数据迁移：设置现有用户的role和现有交易员的owner_user_id
+	d.migrateUserRoles()
+	d.migrateTradersOwnerUserID()
 
 	return nil
 }
@@ -428,8 +477,21 @@ type User struct {
 	PasswordHash string    `json:"-"` // 不返回到前端
 	OTPSecret    string    `json:"-"` // 不返回到前端
 	OTPVerified  bool      `json:"otp_verified"`
+	Role         string    `json:"role"`      // 用户角色: 'admin' | 'user' | 'group_leader' | 'trader_account'
+	TraderID     string    `json:"trader_id"` // 交易员账号关联的交易员ID
+	Category     string    `json:"category"`  // 交易员账号的分类（冗余字段）
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// Category 分类配置
+type Category struct {
+	ID          int       `json:"id"`
+	Name        string    `json:"name"`
+	OwnerUserID string    `json:"owner_user_id"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // AIModelConfig AI模型配置
@@ -486,6 +548,9 @@ type TraderRecord struct {
 	OverrideBasePrompt   bool      `json:"override_base_prompt"`   // 是否覆盖基础prompt
 	SystemPromptTemplate string    `json:"system_prompt_template"` // 系统提示词模板名称
 	IsCrossMargin        bool      `json:"is_cross_margin"`        // 是否为全仓模式（true=全仓，false=逐仓）
+	Category             string    `json:"category"`               // 交易员分类
+	TraderAccountID      string    `json:"trader_account_id"`      // 关联的交易员账号用户ID
+	OwnerUserID          string    `json:"owner_user_id"`          // 创建该交易员的用户ID
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
@@ -512,10 +577,14 @@ func GenerateOTPSecret() (string, error) {
 
 // CreateUser 创建用户
 func (d *Database) CreateUser(user *User) error {
+	role := user.Role
+	if role == "" {
+		role = "user"
+	}
 	_, err := d.db.Exec(`
-		INSERT INTO users (id, email, password_hash, otp_secret, otp_verified)
-		VALUES (?, ?, ?, ?, ?)
-	`, user.ID, user.Email, user.PasswordHash, user.OTPSecret, user.OTPVerified)
+		INSERT INTO users (id, email, password_hash, otp_secret, otp_verified, role, trader_id, category)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, user.ID, user.Email, user.PasswordHash, user.OTPSecret, user.OTPVerified, role, user.TraderID, user.Category)
 	return err
 }
 
@@ -548,15 +617,30 @@ func (d *Database) EnsureAdminUser() error {
 // GetUserByEmail 通过邮箱获取用户
 func (d *Database) GetUserByEmail(email string) (*User, error) {
 	var user User
+	var role, traderID, category sql.NullString
 	err := d.db.QueryRow(`
-		SELECT id, email, password_hash, otp_secret, otp_verified, created_at, updated_at
+		SELECT id, email, password_hash, otp_secret, otp_verified, 
+		       COALESCE(role, 'user') as role, trader_id, category,
+		       created_at, updated_at
 		FROM users WHERE email = ?
 	`, email).Scan(
 		&user.ID, &user.Email, &user.PasswordHash, &user.OTPSecret,
-		&user.OTPVerified, &user.CreatedAt, &user.UpdatedAt,
+		&user.OTPVerified, &role, &traderID, &category,
+		&user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if role.Valid {
+		user.Role = role.String
+	} else {
+		user.Role = "user"
+	}
+	if traderID.Valid {
+		user.TraderID = traderID.String
+	}
+	if category.Valid {
+		user.Category = category.String
 	}
 	return &user, nil
 }
@@ -564,15 +648,30 @@ func (d *Database) GetUserByEmail(email string) (*User, error) {
 // GetUserByID 通过ID获取用户
 func (d *Database) GetUserByID(userID string) (*User, error) {
 	var user User
+	var role, traderID, category sql.NullString
 	err := d.db.QueryRow(`
-		SELECT id, email, password_hash, otp_secret, otp_verified, created_at, updated_at
+		SELECT id, email, password_hash, otp_secret, otp_verified,
+		       COALESCE(role, 'user') as role, trader_id, category,
+		       created_at, updated_at
 		FROM users WHERE id = ?
 	`, userID).Scan(
 		&user.ID, &user.Email, &user.PasswordHash, &user.OTPSecret,
-		&user.OTPVerified, &user.CreatedAt, &user.UpdatedAt,
+		&user.OTPVerified, &role, &traderID, &category,
+		&user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if role.Valid {
+		user.Role = role.String
+	} else {
+		user.Role = "user"
+	}
+	if traderID.Valid {
+		user.TraderID = traderID.String
+	}
+	if category.Valid {
+		user.Category = category.String
 	}
 	return &user, nil
 }
@@ -899,10 +998,18 @@ func (d *Database) CreateExchange(userID, id, name, typ string, enabled bool, ap
 
 // CreateTrader 创建交易员
 func (d *Database) CreateTrader(trader *TraderRecord) error {
+	category := trader.Category
+	if category == "" {
+		category = ""
+	}
+	ownerUserID := trader.OwnerUserID
+	if ownerUserID == "" {
+		ownerUserID = trader.UserID // 默认使用user_id作为owner_user_id
+	}
 	_, err := d.db.Exec(`
-		INSERT INTO traders (id, user_id, name, ai_model_id, exchange_id, initial_balance, scan_interval_minutes, is_running, btc_eth_leverage, altcoin_leverage, trading_symbols, use_coin_pool, use_oi_top, custom_prompt, override_base_prompt, system_prompt_template, is_cross_margin)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, trader.ID, trader.UserID, trader.Name, trader.AIModelID, trader.ExchangeID, trader.InitialBalance, trader.ScanIntervalMinutes, trader.IsRunning, trader.BTCETHLeverage, trader.AltcoinLeverage, trader.TradingSymbols, trader.UseCoinPool, trader.UseOITop, trader.CustomPrompt, trader.OverrideBasePrompt, trader.SystemPromptTemplate, trader.IsCrossMargin)
+		INSERT INTO traders (id, user_id, name, ai_model_id, exchange_id, initial_balance, scan_interval_minutes, is_running, btc_eth_leverage, altcoin_leverage, trading_symbols, use_coin_pool, use_oi_top, custom_prompt, override_base_prompt, system_prompt_template, is_cross_margin, category, owner_user_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, trader.ID, trader.UserID, trader.Name, trader.AIModelID, trader.ExchangeID, trader.InitialBalance, trader.ScanIntervalMinutes, trader.IsRunning, trader.BTCETHLeverage, trader.AltcoinLeverage, trader.TradingSymbols, trader.UseCoinPool, trader.UseOITop, trader.CustomPrompt, trader.OverrideBasePrompt, trader.SystemPromptTemplate, trader.IsCrossMargin, category, ownerUserID)
 	return err
 }
 
@@ -915,7 +1022,11 @@ func (d *Database) GetTraders(userID string) ([]*TraderRecord, error) {
 		       COALESCE(use_coin_pool, 0) as use_coin_pool, COALESCE(use_oi_top, 0) as use_oi_top,
 		       COALESCE(custom_prompt, '') as custom_prompt, COALESCE(override_base_prompt, 0) as override_base_prompt,
 		       COALESCE(system_prompt_template, 'default') as system_prompt_template,
-		       COALESCE(is_cross_margin, 1) as is_cross_margin, created_at, updated_at
+		       COALESCE(is_cross_margin, 1) as is_cross_margin,
+		       COALESCE(category, '') as category,
+		       COALESCE(trader_account_id, '') as trader_account_id,
+		       COALESCE(owner_user_id, '') as owner_user_id,
+		       created_at, updated_at
 		FROM traders WHERE user_id = ? ORDER BY created_at DESC
 	`, userID)
 	if err != nil {
@@ -933,6 +1044,7 @@ func (d *Database) GetTraders(userID string) ([]*TraderRecord, error) {
 			&trader.UseCoinPool, &trader.UseOITop,
 			&trader.CustomPrompt, &trader.OverrideBasePrompt, &trader.SystemPromptTemplate,
 			&trader.IsCrossMargin,
+			&trader.Category, &trader.TraderAccountID, &trader.OwnerUserID,
 			&trader.CreatedAt, &trader.UpdatedAt,
 		)
 		if err != nil {
@@ -1270,4 +1382,522 @@ func (d *Database) decryptSensitiveData(encrypted string) string {
 	}
 
 	return decrypted
+}
+
+// migrateUserRoles 数据迁移：设置现有用户的role字段
+func (d *Database) migrateUserRoles() {
+	_, err := d.db.Exec(`UPDATE users SET role = 'user' WHERE role IS NULL OR role = ''`)
+	if err != nil {
+		log.Printf("⚠️ 迁移用户角色失败: %v", err)
+	} else {
+		log.Printf("✅ 用户角色迁移完成")
+	}
+}
+
+// migrateTradersOwnerUserID 数据迁移：设置现有交易员的owner_user_id
+func (d *Database) migrateTradersOwnerUserID() {
+	// 获取所有owner_user_id为NULL的交易员
+	rows, err := d.db.Query("SELECT id, user_id FROM traders WHERE owner_user_id IS NULL")
+	if err != nil {
+		log.Printf("⚠️ 查询交易员失败: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	updatedCount := 0
+	for rows.Next() {
+		var traderID, userID string
+		if err := rows.Scan(&traderID, &userID); err != nil {
+			continue
+		}
+
+		// 如果user_id存在，设置为owner_user_id
+		if userID != "" {
+			_, err := d.db.Exec("UPDATE traders SET owner_user_id = ? WHERE id = ?", userID, traderID)
+			if err != nil {
+				log.Printf("⚠️ 更新交易员 %s 的owner_user_id失败: %v", traderID, err)
+			} else {
+				updatedCount++
+			}
+		}
+	}
+
+	if updatedCount > 0 {
+		log.Printf("✅ 交易员owner_user_id迁移完成，更新了 %d 条记录", updatedCount)
+	}
+}
+
+// GetAllTraders 获取所有交易员（Admin用）
+func (d *Database) GetAllTraders() ([]*TraderRecord, error) {
+	rows, err := d.db.Query(`
+		SELECT id, user_id, name, ai_model_id, exchange_id, initial_balance, scan_interval_minutes, is_running,
+		       COALESCE(btc_eth_leverage, 5) as btc_eth_leverage, COALESCE(altcoin_leverage, 5) as altcoin_leverage,
+		       COALESCE(trading_symbols, '') as trading_symbols,
+		       COALESCE(use_coin_pool, 0) as use_coin_pool, COALESCE(use_oi_top, 0) as use_oi_top,
+		       COALESCE(custom_prompt, '') as custom_prompt, COALESCE(override_base_prompt, 0) as override_base_prompt,
+		       COALESCE(system_prompt_template, 'default') as system_prompt_template,
+		       COALESCE(is_cross_margin, 1) as is_cross_margin,
+		       COALESCE(category, '') as category,
+		       COALESCE(trader_account_id, '') as trader_account_id,
+		       COALESCE(owner_user_id, '') as owner_user_id,
+		       created_at, updated_at
+		FROM traders ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var traders []*TraderRecord
+	for rows.Next() {
+		var trader TraderRecord
+		err := rows.Scan(
+			&trader.ID, &trader.UserID, &trader.Name, &trader.AIModelID, &trader.ExchangeID,
+			&trader.InitialBalance, &trader.ScanIntervalMinutes, &trader.IsRunning,
+			&trader.BTCETHLeverage, &trader.AltcoinLeverage, &trader.TradingSymbols,
+			&trader.UseCoinPool, &trader.UseOITop,
+			&trader.CustomPrompt, &trader.OverrideBasePrompt, &trader.SystemPromptTemplate,
+			&trader.IsCrossMargin,
+			&trader.Category, &trader.TraderAccountID, &trader.OwnerUserID,
+			&trader.CreatedAt, &trader.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		traders = append(traders, &trader)
+	}
+
+	return traders, nil
+}
+
+// GetTradersByOwnerUserID 根据owner_user_id获取交易员列表
+func (d *Database) GetTradersByOwnerUserID(userID string) ([]*TraderRecord, error) {
+	rows, err := d.db.Query(`
+		SELECT id, user_id, name, ai_model_id, exchange_id, initial_balance, scan_interval_minutes, is_running,
+		       COALESCE(btc_eth_leverage, 5) as btc_eth_leverage, COALESCE(altcoin_leverage, 5) as altcoin_leverage,
+		       COALESCE(trading_symbols, '') as trading_symbols,
+		       COALESCE(use_coin_pool, 0) as use_coin_pool, COALESCE(use_oi_top, 0) as use_oi_top,
+		       COALESCE(custom_prompt, '') as custom_prompt, COALESCE(override_base_prompt, 0) as override_base_prompt,
+		       COALESCE(system_prompt_template, 'default') as system_prompt_template,
+		       COALESCE(is_cross_margin, 1) as is_cross_margin,
+		       COALESCE(category, '') as category,
+		       COALESCE(trader_account_id, '') as trader_account_id,
+		       COALESCE(owner_user_id, '') as owner_user_id,
+		       created_at, updated_at
+		FROM traders WHERE owner_user_id = ? ORDER BY created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var traders []*TraderRecord
+	for rows.Next() {
+		var trader TraderRecord
+		err := rows.Scan(
+			&trader.ID, &trader.UserID, &trader.Name, &trader.AIModelID, &trader.ExchangeID,
+			&trader.InitialBalance, &trader.ScanIntervalMinutes, &trader.IsRunning,
+			&trader.BTCETHLeverage, &trader.AltcoinLeverage, &trader.TradingSymbols,
+			&trader.UseCoinPool, &trader.UseOITop,
+			&trader.CustomPrompt, &trader.OverrideBasePrompt, &trader.SystemPromptTemplate,
+			&trader.IsCrossMargin,
+			&trader.Category, &trader.TraderAccountID, &trader.OwnerUserID,
+			&trader.CreatedAt, &trader.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		traders = append(traders, &trader)
+	}
+
+	return traders, nil
+}
+
+// GetTradersByCategories 根据分类列表获取交易员
+func (d *Database) GetTradersByCategories(categories []string) ([]*TraderRecord, error) {
+	if len(categories) == 0 {
+		return []*TraderRecord{}, nil
+	}
+
+	// 构建IN子句
+	placeholders := make([]string, len(categories))
+	args := make([]interface{}, len(categories))
+	for i, cat := range categories {
+		placeholders[i] = "?"
+		args[i] = cat
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, user_id, name, ai_model_id, exchange_id, initial_balance, scan_interval_minutes, is_running,
+		       COALESCE(btc_eth_leverage, 5) as btc_eth_leverage, COALESCE(altcoin_leverage, 5) as altcoin_leverage,
+		       COALESCE(trading_symbols, '') as trading_symbols,
+		       COALESCE(use_coin_pool, 0) as use_coin_pool, COALESCE(use_oi_top, 0) as use_oi_top,
+		       COALESCE(custom_prompt, '') as custom_prompt, COALESCE(override_base_prompt, 0) as override_base_prompt,
+		       COALESCE(system_prompt_template, 'default') as system_prompt_template,
+		       COALESCE(is_cross_margin, 1) as is_cross_margin,
+		       COALESCE(category, '') as category,
+		       COALESCE(trader_account_id, '') as trader_account_id,
+		       COALESCE(owner_user_id, '') as owner_user_id,
+		       created_at, updated_at
+		FROM traders WHERE category IN (%s) ORDER BY created_at DESC
+	`, strings.Join(placeholders, ","))
+
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var traders []*TraderRecord
+	for rows.Next() {
+		var trader TraderRecord
+		err := rows.Scan(
+			&trader.ID, &trader.UserID, &trader.Name, &trader.AIModelID, &trader.ExchangeID,
+			&trader.InitialBalance, &trader.ScanIntervalMinutes, &trader.IsRunning,
+			&trader.BTCETHLeverage, &trader.AltcoinLeverage, &trader.TradingSymbols,
+			&trader.UseCoinPool, &trader.UseOITop,
+			&trader.CustomPrompt, &trader.OverrideBasePrompt, &trader.SystemPromptTemplate,
+			&trader.IsCrossMargin,
+			&trader.Category, &trader.TraderAccountID, &trader.OwnerUserID,
+			&trader.CreatedAt, &trader.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		traders = append(traders, &trader)
+	}
+
+	return traders, nil
+}
+
+// GetTradersByID 根据ID获取交易员（返回数组，即使只有一个）
+func (d *Database) GetTradersByID(traderID string) ([]*TraderRecord, error) {
+	rows, err := d.db.Query(`
+		SELECT id, user_id, name, ai_model_id, exchange_id, initial_balance, scan_interval_minutes, is_running,
+		       COALESCE(btc_eth_leverage, 5) as btc_eth_leverage, COALESCE(altcoin_leverage, 5) as altcoin_leverage,
+		       COALESCE(trading_symbols, '') as trading_symbols,
+		       COALESCE(use_coin_pool, 0) as use_coin_pool, COALESCE(use_oi_top, 0) as use_oi_top,
+		       COALESCE(custom_prompt, '') as custom_prompt, COALESCE(override_base_prompt, 0) as override_base_prompt,
+		       COALESCE(system_prompt_template, 'default') as system_prompt_template,
+		       COALESCE(is_cross_margin, 1) as is_cross_margin,
+		       COALESCE(category, '') as category,
+		       COALESCE(trader_account_id, '') as trader_account_id,
+		       COALESCE(owner_user_id, '') as owner_user_id,
+		       created_at, updated_at
+		FROM traders WHERE id = ? ORDER BY created_at DESC
+	`, traderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var traders []*TraderRecord
+	for rows.Next() {
+		var trader TraderRecord
+		err := rows.Scan(
+			&trader.ID, &trader.UserID, &trader.Name, &trader.AIModelID, &trader.ExchangeID,
+			&trader.InitialBalance, &trader.ScanIntervalMinutes, &trader.IsRunning,
+			&trader.BTCETHLeverage, &trader.AltcoinLeverage, &trader.TradingSymbols,
+			&trader.UseCoinPool, &trader.UseOITop,
+			&trader.CustomPrompt, &trader.OverrideBasePrompt, &trader.SystemPromptTemplate,
+			&trader.IsCrossMargin,
+			&trader.Category, &trader.TraderAccountID, &trader.OwnerUserID,
+			&trader.CreatedAt, &trader.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		traders = append(traders, &trader)
+	}
+
+	return traders, nil
+}
+
+// GetTraderByID 根据ID获取单个交易员（包含owner_user_id和category）
+func (d *Database) GetTraderByID(traderID string) (*TraderRecord, error) {
+	var trader TraderRecord
+	err := d.db.QueryRow(`
+		SELECT id, user_id, name, ai_model_id, exchange_id, initial_balance, scan_interval_minutes, is_running,
+		       COALESCE(btc_eth_leverage, 5) as btc_eth_leverage, COALESCE(altcoin_leverage, 5) as altcoin_leverage,
+		       COALESCE(trading_symbols, '') as trading_symbols,
+		       COALESCE(use_coin_pool, 0) as use_coin_pool, COALESCE(use_oi_top, 0) as use_oi_top,
+		       COALESCE(custom_prompt, '') as custom_prompt, COALESCE(override_base_prompt, 0) as override_base_prompt,
+		       COALESCE(system_prompt_template, 'default') as system_prompt_template,
+		       COALESCE(is_cross_margin, 1) as is_cross_margin,
+		       COALESCE(category, '') as category,
+		       COALESCE(trader_account_id, '') as trader_account_id,
+		       COALESCE(owner_user_id, '') as owner_user_id,
+		       created_at, updated_at
+		FROM traders WHERE id = ?
+	`, traderID).Scan(
+		&trader.ID, &trader.UserID, &trader.Name, &trader.AIModelID, &trader.ExchangeID,
+		&trader.InitialBalance, &trader.ScanIntervalMinutes, &trader.IsRunning,
+		&trader.BTCETHLeverage, &trader.AltcoinLeverage, &trader.TradingSymbols,
+		&trader.UseCoinPool, &trader.UseOITop,
+		&trader.CustomPrompt, &trader.OverrideBasePrompt, &trader.SystemPromptTemplate,
+		&trader.IsCrossMargin,
+		&trader.Category, &trader.TraderAccountID, &trader.OwnerUserID,
+		&trader.CreatedAt, &trader.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &trader, nil
+}
+
+// GetUserCategories 获取用户创建的所有分类名称
+func (d *Database) GetUserCategories(userID string) ([]string, error) {
+	rows, err := d.db.Query(`SELECT name FROM categories WHERE owner_user_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		categories = append(categories, name)
+	}
+
+	return categories, nil
+}
+
+// GetGroupLeaderCategories 获取小组组长可以观测的分类
+func (d *Database) GetGroupLeaderCategories(userID string) ([]string, error) {
+	rows, err := d.db.Query(`SELECT category FROM group_leader_categories WHERE group_leader_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []string
+	for rows.Next() {
+		var category string
+		if err := rows.Scan(&category); err != nil {
+			continue
+		}
+		categories = append(categories, category)
+	}
+
+	return categories, nil
+}
+
+// CreateCategory 创建分类
+func (d *Database) CreateCategory(userID, name, description string) (*Category, error) {
+	result, err := d.db.Exec(`
+		INSERT INTO categories (name, owner_user_id, description, created_at, updated_at)
+		VALUES (?, ?, ?, datetime('now'), datetime('now'))
+	`, name, userID, description)
+	if err != nil {
+		return nil, err
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+
+	category := &Category{
+		ID:          int(id),
+		Name:        name,
+		OwnerUserID: userID,
+		Description: description,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	return category, nil
+}
+
+// GetCategoryByID 根据ID获取分类
+func (d *Database) GetCategoryByID(categoryID int) (*Category, error) {
+	var category Category
+	err := d.db.QueryRow(`
+		SELECT id, name, owner_user_id, description, created_at, updated_at
+		FROM categories WHERE id = ?
+	`, categoryID).Scan(
+		&category.ID, &category.Name, &category.OwnerUserID, &category.Description,
+		&category.CreatedAt, &category.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &category, nil
+}
+
+// GetCategoryByName 根据名称获取分类
+func (d *Database) GetCategoryByName(categoryName string) (*Category, error) {
+	var category Category
+	err := d.db.QueryRow(`
+		SELECT id, name, owner_user_id, description, created_at, updated_at
+		FROM categories WHERE name = ? LIMIT 1
+	`, categoryName).Scan(
+		&category.ID, &category.Name, &category.OwnerUserID, &category.Description,
+		&category.CreatedAt, &category.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &category, nil
+}
+
+// GetCategoryByNameAndOwner 根据名称和所有者获取分类
+func (d *Database) GetCategoryByNameAndOwner(categoryName, ownerUserID string) (*Category, error) {
+	var category Category
+	err := d.db.QueryRow(`
+		SELECT id, name, owner_user_id, description, created_at, updated_at
+		FROM categories WHERE name = ? AND owner_user_id = ?
+	`, categoryName, ownerUserID).Scan(
+		&category.ID, &category.Name, &category.OwnerUserID, &category.Description,
+		&category.CreatedAt, &category.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &category, nil
+}
+
+// GetCategoriesByOwner 获取用户创建的分类列表
+func (d *Database) GetCategoriesByOwner(userID string) ([]*Category, error) {
+	rows, err := d.db.Query(`
+		SELECT id, name, owner_user_id, description, created_at, updated_at
+		FROM categories WHERE owner_user_id = ? ORDER BY created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []*Category
+	for rows.Next() {
+		var category Category
+		err := rows.Scan(
+			&category.ID, &category.Name, &category.OwnerUserID, &category.Description,
+			&category.CreatedAt, &category.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		categories = append(categories, &category)
+	}
+
+	return categories, nil
+}
+
+// GetAllCategories 获取所有分类
+func (d *Database) GetAllCategories() ([]*Category, error) {
+	rows, err := d.db.Query(`
+		SELECT id, name, owner_user_id, description, created_at, updated_at
+		FROM categories ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []*Category
+	for rows.Next() {
+		var category Category
+		err := rows.Scan(
+			&category.ID, &category.Name, &category.OwnerUserID, &category.Description,
+			&category.CreatedAt, &category.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		categories = append(categories, &category)
+	}
+
+	return categories, nil
+}
+
+// UpdateCategory 更新分类信息
+func (d *Database) UpdateCategory(categoryID int, name, description string) error {
+	_, err := d.db.Exec(`
+		UPDATE categories SET name = ?, description = ?, updated_at = datetime('now')
+		WHERE id = ?
+	`, name, description, categoryID)
+	return err
+}
+
+// DeleteCategory 删除分类
+func (d *Database) DeleteCategory(categoryID int) error {
+	_, err := d.db.Exec(`DELETE FROM categories WHERE id = ?`, categoryID)
+	return err
+}
+
+// UpdateTraderCategory 更新交易员分类
+func (d *Database) UpdateTraderCategory(traderID, category string) error {
+	_, err := d.db.Exec(`UPDATE traders SET category = ? WHERE id = ?`, category, traderID)
+	return err
+}
+
+// UpdateTradersCategoryToEmpty 将指定分类下的所有交易员的category设为空字符串
+func (d *Database) UpdateTradersCategoryToEmpty(categoryName string) error {
+	_, err := d.db.Exec(`UPDATE traders SET category = '' WHERE category = ?`, categoryName)
+	return err
+}
+
+// InsertGroupLeaderCategory 插入小组组长分类关联
+func (d *Database) InsertGroupLeaderCategory(groupLeaderID, category, ownerUserID string) error {
+	_, err := d.db.Exec(`
+		INSERT OR IGNORE INTO group_leader_categories (group_leader_id, category, owner_user_id, created_at, updated_at)
+		VALUES (?, ?, ?, datetime('now'), datetime('now'))
+	`, groupLeaderID, category, ownerUserID)
+	return err
+}
+
+// UpdateTraderAccountID 更新交易员的账号ID
+func (d *Database) UpdateTraderAccountID(traderID, accountID string) error {
+	_, err := d.db.Exec(`UPDATE traders SET trader_account_id = ? WHERE id = ?`, accountID, traderID)
+	return err
+}
+
+// GetTraderByAccountID 通过交易员账号ID查询交易员
+func (d *Database) GetTraderByAccountID(accountID string) (*TraderRecord, error) {
+	var trader TraderRecord
+	err := d.db.QueryRow(`
+		SELECT id, user_id, name, ai_model_id, exchange_id, initial_balance, scan_interval_minutes, is_running,
+		       COALESCE(btc_eth_leverage, 5) as btc_eth_leverage, COALESCE(altcoin_leverage, 5) as altcoin_leverage,
+		       COALESCE(trading_symbols, '') as trading_symbols,
+		       COALESCE(use_coin_pool, 0) as use_coin_pool, COALESCE(use_oi_top, 0) as use_oi_top,
+		       COALESCE(custom_prompt, '') as custom_prompt, COALESCE(override_base_prompt, 0) as override_base_prompt,
+		       COALESCE(system_prompt_template, 'default') as system_prompt_template,
+		       COALESCE(is_cross_margin, 1) as is_cross_margin,
+		       COALESCE(category, '') as category,
+		       COALESCE(trader_account_id, '') as trader_account_id,
+		       COALESCE(owner_user_id, '') as owner_user_id,
+		       created_at, updated_at
+		FROM traders WHERE trader_account_id = ?
+	`, accountID).Scan(
+		&trader.ID, &trader.UserID, &trader.Name, &trader.AIModelID, &trader.ExchangeID,
+		&trader.InitialBalance, &trader.ScanIntervalMinutes, &trader.IsRunning,
+		&trader.BTCETHLeverage, &trader.AltcoinLeverage, &trader.TradingSymbols,
+		&trader.UseCoinPool, &trader.UseOITop,
+		&trader.CustomPrompt, &trader.OverrideBasePrompt, &trader.SystemPromptTemplate,
+		&trader.IsCrossMargin,
+		&trader.Category,
+		&trader.TraderAccountID,
+		&trader.OwnerUserID,
+		&trader.CreatedAt, &trader.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &trader, nil
+}
+
+// DeleteUser 删除用户
+func (d *Database) DeleteUser(userID string) error {
+	_, err := d.db.Exec(`DELETE FROM users WHERE id = ?`, userID)
+	return err
+}
+
+// DeleteGroupLeaderCategories 删除小组组长的所有分类关联
+func (d *Database) DeleteGroupLeaderCategories(groupLeaderID string) error {
+	_, err := d.db.Exec(`DELETE FROM group_leader_categories WHERE group_leader_id = ?`, groupLeaderID)
+	return err
 }

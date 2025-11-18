@@ -1,17 +1,15 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"nofx/auth"
 	"nofx/config"
-	"nofx/crypto"
 	"nofx/decision"
-	"nofx/hook"
 	"nofx/manager"
 	"nofx/trader"
 	"strconv"
@@ -25,15 +23,13 @@ import (
 // Server HTTP API服务器
 type Server struct {
 	router        *gin.Engine
-	httpServer    *http.Server
 	traderManager *manager.TraderManager
 	database      *config.Database
-	cryptoHandler *CryptoHandler
 	port          int
 }
 
 // NewServer 创建API服务器
-func NewServer(traderManager *manager.TraderManager, database *config.Database, cryptoService *crypto.CryptoService, port int) *Server {
+func NewServer(traderManager *manager.TraderManager, database *config.Database, port int) *Server {
 	// 设置为Release模式（减少日志输出）
 	gin.SetMode(gin.ReleaseMode)
 
@@ -42,14 +38,10 @@ func NewServer(traderManager *manager.TraderManager, database *config.Database, 
 	// 启用CORS
 	router.Use(corsMiddleware())
 
-	// 创建加密处理器
-	cryptoHandler := NewCryptoHandler(cryptoService)
-
 	s := &Server{
 		router:        router,
 		traderManager: traderManager,
 		database:      database,
-		cryptoHandler: cryptoHandler,
 		port:          port,
 	}
 
@@ -64,7 +56,9 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Max-Age", "86400")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusOK)
@@ -84,35 +78,38 @@ func (s *Server) setupRoutes() {
 		api.Any("/health", s.handleHealth)
 
 		// 管理员登录（管理员模式下使用，公共）
+		api.POST("/admin-login", s.handleAdminLogin)
 
-		// 系统支持的模型和交易所（无需认证）
-		api.GET("/supported-models", s.handleGetSupportedModels)
-		api.GET("/supported-exchanges", s.handleGetSupportedExchanges)
+		// 非管理员模式下的公开认证路由
+		if !auth.IsAdminMode() {
+			// 认证相关路由（无需认证）
+			api.POST("/register", s.handleRegister)
+			api.POST("/login", s.handleLogin)
+			api.POST("/verify-otp", s.handleVerifyOTP)
+			api.POST("/complete-registration", s.handleCompleteRegistration)
+
+			// 系统支持的模型和交易所（无需认证）
+			api.GET("/supported-models", s.handleGetSupportedModels)
+			api.GET("/supported-exchanges", s.handleGetSupportedExchanges)
+		}
 
 		// 系统配置（无需认证，用于前端判断是否管理员模式/注册是否开启）
 		api.GET("/config", s.handleGetSystemConfig)
 
-		// 加密相关接口（无需认证）
-		api.GET("/crypto/public-key", s.cryptoHandler.HandleGetPublicKey)
-		api.POST("/crypto/decrypt", s.cryptoHandler.HandleDecryptSensitiveData)
+		// 系统提示词模板管理（仅在非管理员模式下公开）
+		if !auth.IsAdminMode() {
+			// 系统提示词模板管理（无需认证）
+			api.GET("/prompt-templates", s.handleGetPromptTemplates)
+			api.GET("/prompt-templates/:name", s.handleGetPromptTemplate)
 
-		// 系统提示词模板管理（无需认证）
-		api.GET("/prompt-templates", s.handleGetPromptTemplates)
-		api.GET("/prompt-templates/:name", s.handleGetPromptTemplate)
-
-		// 公开的竞赛数据（无需认证）
-		api.GET("/traders", s.handlePublicTraderList)
-		api.GET("/competition", s.handlePublicCompetition)
-		api.GET("/top-traders", s.handleTopTraders)
-		api.GET("/equity-history", s.handleEquityHistory)
-		api.POST("/equity-history-batch", s.handleEquityHistoryBatch)
-		api.GET("/traders/:id/public-config", s.handleGetPublicTraderConfig)
-
-		// 认证相关路由（无需认证）
-		api.POST("/register", s.handleRegister)
-		api.POST("/login", s.handleLogin)
-		api.POST("/verify-otp", s.handleVerifyOTP)
-		api.POST("/complete-registration", s.handleCompleteRegistration)
+			// 公开的竞赛数据（无需认证）
+			api.GET("/traders", s.handlePublicTraderList)
+			api.GET("/competition", s.handlePublicCompetition)
+			api.GET("/top-traders", s.handleTopTraders)
+			api.GET("/equity-history", s.handleEquityHistory)
+			api.POST("/equity-history-batch", s.handleEquityHistoryBatch)
+			api.GET("/traders/:id/public-config", s.handleGetPublicTraderConfig)
+		}
 
 		// 需要认证的路由
 		protected := api.Group("/", s.authMiddleware())
@@ -133,6 +130,29 @@ func (s *Server) setupRoutes() {
 			protected.POST("/traders/:id/stop", s.handleStopTrader)
 			protected.PUT("/traders/:id/prompt", s.handleUpdateTraderPrompt)
 			protected.POST("/traders/:id/sync-balance", s.handleSyncBalance)
+			protected.POST("/traders/:id/create-account", s.handleCreateTraderAccount)
+			protected.PUT("/traders/:id/account/password", s.handleUpdateTraderAccountPassword)
+			protected.GET("/traders/:id/account", s.handleGetTraderAccount)
+			protected.DELETE("/traders/:id/account", s.handleDeleteTraderAccount)
+			protected.POST("/traders/:id/category", s.handleSetTraderCategory)
+
+			// 分类管理
+			protected.GET("/categories", s.handleGetCategories)
+			protected.POST("/categories", s.handleCreateCategory)
+			protected.PUT("/categories/:id", s.handleUpdateCategory)
+			protected.DELETE("/categories/:id", s.handleDeleteCategory)
+
+			// 小组组长管理
+			protected.POST("/group-leaders/create", s.handleCreateGroupLeader)
+			protected.POST("/group-leaders/create-for-category", s.handleCreateGroupLeaderForCategory)
+			protected.GET("/group-leaders", s.handleGetGroupLeaders)
+			protected.PUT("/group-leaders/:id/categories", s.handleUpdateGroupLeaderCategories)
+			protected.DELETE("/group-leaders/:id", s.handleDeleteGroupLeader)
+
+			// 分类账号管理
+			protected.GET("/category-accounts", s.handleGetCategoryAccounts)
+			protected.GET("/category-accounts/:id", s.handleGetCategoryAccountInfo)
+			protected.PUT("/category-accounts/:id/password", s.handleUpdateCategoryAccountPassword)
 
 			// AI模型配置
 			protected.GET("/models", s.handleGetModelConfigs)
@@ -145,6 +165,9 @@ func (s *Server) setupRoutes() {
 			// 用户信号源配置
 			protected.GET("/user/signal-sources", s.handleGetUserSignalSource)
 			protected.POST("/user/signal-sources", s.handleSaveUserSignalSource)
+
+			// 用户账户信息
+			protected.GET("/user/account", s.handleUserAccount)
 
 			// 指定trader的数据（使用query参数 ?trader_id=xxx）
 			protected.GET("/status", s.handleStatus)
@@ -198,6 +221,7 @@ func (s *Server) handleGetSystemConfig(c *gin.Context) {
 	betaMode := betaModeStr == "true"
 
 	c.JSON(http.StatusOK, gin.H{
+		"admin_mode":       auth.IsAdminMode(),
 		"beta_mode":        betaMode,
 		"default_coins":    defaultCoins,
 		"btc_eth_leverage": btcEthLeverage,
@@ -207,17 +231,6 @@ func (s *Server) handleGetSystemConfig(c *gin.Context) {
 
 // handleGetServerIP 获取服务器IP地址（用于白名单配置）
 func (s *Server) handleGetServerIP(c *gin.Context) {
-
-	// 首先尝试从Hook获取用户专用IP
-	userIP := hook.HookExec[hook.IpResult](hook.GETIP, c.GetString("user_id"))
-	if userIP != nil && userIP.Error() == nil {
-		c.JSON(http.StatusOK, gin.H{
-			"public_ip": userIP.GetResult(),
-			"message":   "请将此IP地址添加到白名单中",
-		})
-		return
-	}
-
 	// 尝试通过第三方API获取公网IP
 	publicIP := getPublicIPFromAPI()
 
@@ -343,31 +356,111 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
-// getTraderFromQuery 从query参数获取trader
+// getTraderFromQuery 从query参数获取trader（带权限检查）
 func (s *Server) getTraderFromQuery(c *gin.Context) (*manager.TraderManager, string, error) {
 	userID := c.GetString("user_id")
 	traderID := c.Query("trader_id")
 
-	// 确保用户的交易员已加载到内存中
-	err := s.traderManager.LoadUserTraders(s.database, userID)
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
 	if err != nil {
-		log.Printf("⚠️ 加载用户 %s 的交易员失败: %v", userID, err)
+		return nil, "", fmt.Errorf("用户不存在")
 	}
 
-	if traderID == "" {
-		// 如果没有指定trader_id，返回该用户的第一个trader
-		ids := s.traderManager.GetTraderIDs()
-		if len(ids) == 0 {
-			return nil, "", fmt.Errorf("没有可用的trader")
-		}
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
 
-		// 获取用户的交易员列表，优先返回用户自己的交易员
-		userTraders, err := s.database.GetTraders(userID)
-		if err == nil && len(userTraders) > 0 {
-			traderID = userTraders[0].ID
+	// 获取用户有权限访问的交易员列表
+	var allowedTraders []*config.TraderRecord
+	switch role {
+	case "admin":
+		// 管理员可以访问所有交易员
+		allowedTraders, _ = s.database.GetAllTraders()
+	case "user":
+		// 普通用户：返回自己分类下的所有交易员，或owner_user_id为自己的交易员
+		userCategories, _ := s.database.GetUserCategories(userID)
+		if len(userCategories) == 0 {
+			allowedTraders, _ = s.database.GetTradersByOwnerUserID(userID)
 		} else {
-			traderID = ids[0]
+			categoryTraders, _ := s.database.GetTradersByCategories(userCategories)
+			ownerTraders, _ := s.database.GetTradersByOwnerUserID(userID)
+			traderMap := make(map[string]*config.TraderRecord)
+			for _, t := range categoryTraders {
+				traderMap[t.ID] = t
+			}
+			for _, t := range ownerTraders {
+				if t.Category == "" || contains(userCategories, t.Category) {
+					traderMap[t.ID] = t
+				}
+			}
+			allowedTraders = make([]*config.TraderRecord, 0, len(traderMap))
+			for _, t := range traderMap {
+				allowedTraders = append(allowedTraders, t)
+			}
 		}
+	case "group_leader":
+		// 小组组长：返回观测的分类下的交易员
+		categories, _ := s.database.GetGroupLeaderCategories(userID)
+		allowedTraders, _ = s.database.GetTradersByCategories(categories)
+	case "trader_account":
+		// 交易员账号：返回自己的交易员
+		if user.TraderID != "" {
+			traderList, _ := s.database.GetTradersByID(user.TraderID)
+			if len(traderList) > 0 {
+				allowedTraders = traderList
+			}
+		}
+	default:
+		// 向后兼容：默认只返回自己的交易员
+		userCategories, _ := s.database.GetUserCategories(userID)
+		if len(userCategories) == 0 {
+			allowedTraders, _ = s.database.GetTradersByOwnerUserID(userID)
+		} else {
+			categoryTraders, _ := s.database.GetTradersByCategories(userCategories)
+			ownerTraders, _ := s.database.GetTradersByOwnerUserID(userID)
+			traderMap := make(map[string]*config.TraderRecord)
+			for _, t := range categoryTraders {
+				traderMap[t.ID] = t
+			}
+			for _, t := range ownerTraders {
+				if t.Category == "" || contains(userCategories, t.Category) {
+					traderMap[t.ID] = t
+				}
+			}
+			allowedTraders = make([]*config.TraderRecord, 0, len(traderMap))
+			for _, t := range traderMap {
+				allowedTraders = append(allowedTraders, t)
+			}
+		}
+	}
+
+	if len(allowedTraders) == 0 {
+		return nil, "", fmt.Errorf("没有可用的trader")
+	}
+
+	// 如果指定了trader_id，验证是否有权限访问
+	if traderID != "" {
+		hasPermission := false
+		for _, t := range allowedTraders {
+			if t.ID == traderID {
+				hasPermission = true
+				break
+			}
+		}
+		if !hasPermission {
+			return nil, "", fmt.Errorf("无权访问该交易员")
+		}
+	} else {
+		// 如果没有指定trader_id，返回第一个有权限的交易员
+		traderID = allowedTraders[0].ID
+	}
+
+	// 确保用户的交易员已加载到内存中
+	err = s.traderManager.LoadUserTraders(s.database, userID)
+	if err != nil {
+		log.Printf("⚠️ 加载用户 %s 的交易员失败: %v", userID, err)
 	}
 
 	return s.traderManager, traderID, nil
@@ -389,6 +482,7 @@ type CreateTraderRequest struct {
 	IsCrossMargin        *bool   `json:"is_cross_margin"`        // 指针类型，nil表示使用默认值true
 	UseCoinPool          bool    `json:"use_coin_pool"`
 	UseOITop             bool    `json:"use_oi_top"`
+	Category             string  `json:"category"` // 可选：分类名称（如果提供，必须属于当前用户）
 }
 
 type ModelConfig struct {
@@ -400,16 +494,6 @@ type ModelConfig struct {
 	CustomAPIURL string `json:"customApiUrl,omitempty"`
 }
 
-// SafeModelConfig 安全的模型配置结构（不包含敏感信息）
-type SafeModelConfig struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Provider        string `json:"provider"`
-	Enabled         bool   `json:"enabled"`
-	CustomAPIURL    string `json:"customApiUrl"`    // 自定义API URL（通常不敏感）
-	CustomModelName string `json:"customModelName"` // 自定义模型名（不敏感）
-}
-
 type ExchangeConfig struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -418,18 +502,6 @@ type ExchangeConfig struct {
 	APIKey    string `json:"apiKey,omitempty"`
 	SecretKey string `json:"secretKey,omitempty"`
 	Testnet   bool   `json:"testnet,omitempty"`
-}
-
-// SafeExchangeConfig 安全的交易所配置结构（不包含敏感信息）
-type SafeExchangeConfig struct {
-	ID                    string `json:"id"`
-	Name                  string `json:"name"`
-	Type                  string `json:"type"` // "cex" or "dex"
-	Enabled               bool   `json:"enabled"`
-	Testnet               bool   `json:"testnet,omitempty"`
-	HyperliquidWalletAddr string `json:"hyperliquidWalletAddr"` // Hyperliquid钱包地址（不敏感）
-	AsterUser             string `json:"asterUser"`             // Aster用户名（不敏感）
-	AsterSigner           string `json:"asterSigner"`           // Aster签名者（不敏感）
 }
 
 type UpdateModelConfigRequest struct {
@@ -577,30 +649,66 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		if createErr != nil {
 			log.Printf("⚠️ 创建临时 trader 失败，使用用户输入的初始资金: %v", createErr)
 		} else if tempTrader != nil {
-			// 查询实际余额
-			balanceInfo, balanceErr := tempTrader.GetBalance()
-			if balanceErr != nil {
-				log.Printf("⚠️ 查询交易所余额失败，使用用户输入的初始资金: %v", balanceErr)
-			} else {
-				// 提取可用余额
-				if availableBalance, ok := balanceInfo["available_balance"].(float64); ok && availableBalance > 0 {
-					actualBalance = availableBalance
-					log.Printf("✓ 查询到交易所实际余额: %.2f USDT (用户输入: %.2f USDT)", actualBalance, req.InitialBalance)
-				} else if totalBalance, ok := balanceInfo["balance"].(float64); ok && totalBalance > 0 {
-					// 有些交易所可能只返回 balance 字段
-					actualBalance = totalBalance
-					log.Printf("✓ 查询到交易所实际余额: %.2f USDT (用户输入: %.2f USDT)", actualBalance, req.InitialBalance)
+			// 查询实际余额（带超时控制，避免长时间阻塞）
+			balanceChan := make(chan map[string]interface{}, 1)
+			errorChan := make(chan error, 1)
+
+			go func() {
+				balanceInfo, balanceErr := tempTrader.GetBalance()
+				if balanceErr != nil {
+					errorChan <- balanceErr
 				} else {
-					log.Printf("⚠️ 无法从余额信息中提取可用余额，使用用户输入的初始资金")
+					balanceChan <- balanceInfo
 				}
+			}()
+
+			// 设置10秒超时
+			select {
+			case balanceInfo := <-balanceChan:
+				// 成功获取余额
+				if balanceInfo != nil {
+					// 提取可用余额
+					if availableBalance, ok := balanceInfo["available_balance"].(float64); ok && availableBalance > 0 {
+						actualBalance = availableBalance
+						log.Printf("✓ 查询到交易所实际余额: %.2f USDT (用户输入: %.2f USDT)", actualBalance, req.InitialBalance)
+					} else if totalBalance, ok := balanceInfo["balance"].(float64); ok && totalBalance > 0 {
+						// 有些交易所可能只返回 balance 字段
+						actualBalance = totalBalance
+						log.Printf("✓ 查询到交易所实际余额: %.2f USDT (用户输入: %.2f USDT)", actualBalance, req.InitialBalance)
+					} else {
+						log.Printf("⚠️ 无法从余额信息中提取可用余额，使用用户输入的初始资金")
+					}
+				}
+			case err := <-errorChan:
+				log.Printf("⚠️ 查询交易所余额失败，使用用户输入的初始资金: %v", err)
+			case <-time.After(10 * time.Second):
+				log.Printf("⚠️ 查询交易所余额超时（10秒），使用用户输入的初始资金")
 			}
 		}
+	}
+
+	// 设置分类和所有者用户ID
+	category := "" // 默认为空字符串
+	if req.Category != "" {
+		// 验证分类是否属于当前用户
+		categoryObj, err := s.database.GetCategoryByName(req.Category)
+		if err != nil || categoryObj == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "分类不存在"})
+			return
+		}
+		if categoryObj.OwnerUserID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能使用自己的分类"})
+			return
+		}
+		category = req.Category
 	}
 
 	// 创建交易员配置（数据库实体）
 	trader := &config.TraderRecord{
 		ID:                   traderID,
 		UserID:               userID,
+		OwnerUserID:          userID,   // 设置为当前用户ID
+		Category:             category, // 设置分类（如果提供）
 		Name:                 req.Name,
 		AIModelID:            req.AIModelID,
 		ExchangeID:           req.ExchangeID,
@@ -668,24 +776,31 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		return
 	}
 
-	// 检查交易员是否存在且属于当前用户
-	traders, err := s.database.GetTraders(userID)
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取交易员列表失败"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
 		return
 	}
 
-	var existingTrader *config.TraderRecord
-	for _, trader := range traders {
-		if trader.ID == traderID {
-			existingTrader = trader
-			break
-		}
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
 	}
 
-	if existingTrader == nil {
+	// 获取交易员信息
+	existingTrader, err := s.database.GetTraderByID(traderID)
+	if err != nil || existingTrader == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
 		return
+	}
+
+	// 权限检查：如果不是admin，验证交易员是否属于当前用户
+	if role != "admin" {
+		if existingTrader.OwnerUserID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能修改自己的交易员"})
+			return
+		}
 	}
 
 	// 设置默认值
@@ -759,8 +874,35 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
 
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
+
+	// 获取交易员信息
+	trader, err := s.database.GetTraderByID(traderID)
+	if err != nil || trader == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 权限检查：如果不是admin，验证交易员是否属于当前用户
+	if role != "admin" {
+		if trader.OwnerUserID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能删除自己的交易员"})
+			return
+		}
+	}
+
 	// 从数据库删除
-	err := s.database.DeleteTrader(userID, traderID)
+	err = s.database.DeleteTrader(userID, traderID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("删除交易员失败: %v", err)})
 		return
@@ -784,11 +926,31 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
 
-	// 校验交易员是否属于当前用户
-	_, _, _, err := s.database.GetTraderConfig(userID, traderID)
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在或无访问权限"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
 		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
+
+	// 获取交易员信息
+	traderRecord, err := s.database.GetTraderByID(traderID)
+	if err != nil || traderRecord == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 权限检查：如果不是admin，验证交易员是否属于当前用户
+	if role != "admin" {
+		if traderRecord.OwnerUserID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能启动自己的交易员"})
+			return
+		}
 	}
 
 	trader, err := s.traderManager.GetTrader(traderID)
@@ -827,11 +989,31 @@ func (s *Server) handleStopTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
 
-	// 校验交易员是否属于当前用户
-	_, _, _, err := s.database.GetTraderConfig(userID, traderID)
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在或无访问权限"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
 		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
+
+	// 获取交易员信息
+	traderRecord, err := s.database.GetTraderByID(traderID)
+	if err != nil || traderRecord == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 权限检查：如果不是admin，验证交易员是否属于当前用户
+	if role != "admin" {
+		if traderRecord.OwnerUserID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能停止自己的交易员"})
+			return
+		}
 	}
 
 	trader, err := s.traderManager.GetTrader(traderID)
@@ -865,6 +1047,33 @@ func (s *Server) handleUpdateTraderPrompt(c *gin.Context) {
 	traderID := c.Param("id")
 	userID := c.GetString("user_id")
 
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
+
+	// 获取交易员信息
+	traderRecord, err := s.database.GetTraderByID(traderID)
+	if err != nil || traderRecord == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 权限检查：如果不是admin，验证交易员是否属于当前用户
+	if role != "admin" {
+		if traderRecord.OwnerUserID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能修改自己的交易员"})
+			return
+		}
+	}
+
 	var req struct {
 		CustomPrompt       string `json:"custom_prompt"`
 		OverrideBasePrompt bool   `json:"override_base_prompt"`
@@ -876,7 +1085,7 @@ func (s *Server) handleUpdateTraderPrompt(c *gin.Context) {
 	}
 
 	// 更新数据库
-	err := s.database.UpdateTraderCustomPrompt(userID, traderID, req.CustomPrompt, req.OverrideBasePrompt)
+	err = s.database.UpdateTraderCustomPrompt(userID, traderID, req.CustomPrompt, req.OverrideBasePrompt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新自定义prompt失败: %v", err)})
 		return
@@ -897,6 +1106,33 @@ func (s *Server) handleUpdateTraderPrompt(c *gin.Context) {
 func (s *Server) handleSyncBalance(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
+
+	// 获取交易员信息
+	traderRecord, err := s.database.GetTraderByID(traderID)
+	if err != nil || traderRecord == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 权限检查：如果不是admin，验证交易员是否属于当前用户
+	if role != "admin" {
+		if traderRecord.OwnerUserID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能同步自己交易员的余额"})
+			return
+		}
+	}
 
 	log.Printf("🔄 用户 %s 请求同步交易员 %s 的余额", userID, traderID)
 
@@ -1012,68 +1248,17 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 	}
 	log.Printf("✅ 找到 %d 个AI模型配置", len(models))
 
-	// 转换为安全的响应结构，移除敏感信息
-	safeModels := make([]SafeModelConfig, len(models))
-	for i, model := range models {
-		safeModels[i] = SafeModelConfig{
-			ID:              model.ID,
-			Name:            model.Name,
-			Provider:        model.Provider,
-			Enabled:         model.Enabled,
-			CustomAPIURL:    model.CustomAPIURL,
-			CustomModelName: model.CustomModelName,
-		}
-	}
-
-	c.JSON(http.StatusOK, safeModels)
+	c.JSON(http.StatusOK, models)
 }
 
-// handleUpdateModelConfigs 更新AI模型配置（仅支持加密数据）
+// handleUpdateModelConfigs 更新AI模型配置
 func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 	userID := c.GetString("user_id")
-
-	// 读取原始请求体
-	bodyBytes, err := c.GetRawData()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取请求体失败"})
-		return
-	}
-
-	// 解析加密的 payload
-	var encryptedPayload crypto.EncryptedPayload
-	if err := json.Unmarshal(bodyBytes, &encryptedPayload); err != nil {
-		log.Printf("❌ 解析加密载荷失败: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误，必须使用加密传输"})
-		return
-	}
-
-	// 验证是否为加密数据
-	if encryptedPayload.WrappedKey == "" {
-		log.Printf("❌ 检测到非加密请求 (UserID: %s)", userID)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "此接口仅支持加密传输，请使用加密客户端",
-			"code":    "ENCRYPTION_REQUIRED",
-			"message": "Encrypted transmission is required for security reasons",
-		})
-		return
-	}
-
-	// 解密数据
-	decrypted, err := s.cryptoHandler.cryptoService.DecryptSensitiveData(&encryptedPayload)
-	if err != nil {
-		log.Printf("❌ 解密模型配置失败 (UserID: %s): %v", userID, err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "解密数据失败"})
-		return
-	}
-
-	// 解析解密后的数据
 	var req UpdateModelConfigRequest
-	if err := json.Unmarshal([]byte(decrypted), &req); err != nil {
-		log.Printf("❌ 解析解密数据失败: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "解析解密数据失败"})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	log.Printf("🔓 已解密模型配置数据 (UserID: %s)", userID)
 
 	// 更新每个模型的配置
 	for modelID, modelData := range req.Models {
@@ -1085,13 +1270,13 @@ func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 	}
 
 	// 重新加载该用户的所有交易员，使新配置立即生效
-	err = s.traderManager.LoadUserTraders(s.database, userID)
+	err := s.traderManager.LoadUserTraders(s.database, userID)
 	if err != nil {
 		log.Printf("⚠️ 重新加载用户交易员到内存失败: %v", err)
 		// 这里不返回错误，因为模型配置已经成功更新到数据库
 	}
 
-	log.Printf("✓ AI模型配置已更新: %+v", SanitizeModelConfigForLog(req.Models))
+	log.Printf("✓ AI模型配置已更新: %+v", req.Models)
 	c.JSON(http.StatusOK, gin.H{"message": "模型配置已更新"})
 }
 
@@ -1107,70 +1292,17 @@ func (s *Server) handleGetExchangeConfigs(c *gin.Context) {
 	}
 	log.Printf("✅ 找到 %d 个交易所配置", len(exchanges))
 
-	// 转换为安全的响应结构，移除敏感信息
-	safeExchanges := make([]SafeExchangeConfig, len(exchanges))
-	for i, exchange := range exchanges {
-		safeExchanges[i] = SafeExchangeConfig{
-			ID:                    exchange.ID,
-			Name:                  exchange.Name,
-			Type:                  exchange.Type,
-			Enabled:               exchange.Enabled,
-			Testnet:               exchange.Testnet,
-			HyperliquidWalletAddr: exchange.HyperliquidWalletAddr,
-			AsterUser:             exchange.AsterUser,
-			AsterSigner:           exchange.AsterSigner,
-		}
-	}
-
-	c.JSON(http.StatusOK, safeExchanges)
+	c.JSON(http.StatusOK, exchanges)
 }
 
-// handleUpdateExchangeConfigs 更新交易所配置（仅支持加密数据）
+// handleUpdateExchangeConfigs 更新交易所配置
 func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 	userID := c.GetString("user_id")
-
-	// 读取原始请求体
-	bodyBytes, err := c.GetRawData()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "读取请求体失败"})
-		return
-	}
-
-	// 解析加密的 payload
-	var encryptedPayload crypto.EncryptedPayload
-	if err := json.Unmarshal(bodyBytes, &encryptedPayload); err != nil {
-		log.Printf("❌ 解析加密载荷失败: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误，必须使用加密传输"})
-		return
-	}
-
-	// 验证是否为加密数据
-	if encryptedPayload.WrappedKey == "" {
-		log.Printf("❌ 检测到非加密请求 (UserID: %s)", userID)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "此接口仅支持加密传输，请使用加密客户端",
-			"code":    "ENCRYPTION_REQUIRED",
-			"message": "Encrypted transmission is required for security reasons",
-		})
-		return
-	}
-
-	// 解密数据
-	decrypted, err := s.cryptoHandler.cryptoService.DecryptSensitiveData(&encryptedPayload)
-	if err != nil {
-		log.Printf("❌ 解密交易所配置失败 (UserID: %s): %v", userID, err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "解密数据失败"})
-		return
-	}
-
-	// 解析解密后的数据
 	var req UpdateExchangeConfigRequest
-	if err := json.Unmarshal([]byte(decrypted), &req); err != nil {
-		log.Printf("❌ 解析解密数据失败: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "解析解密数据失败"})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	log.Printf("🔓 已解密交易所配置数据 (UserID: %s)", userID)
 
 	// 更新每个交易所的配置
 	for exchangeID, exchangeData := range req.Exchanges {
@@ -1182,13 +1314,13 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 	}
 
 	// 重新加载该用户的所有交易员，使新配置立即生效
-	err = s.traderManager.LoadUserTraders(s.database, userID)
+	err := s.traderManager.LoadUserTraders(s.database, userID)
 	if err != nil {
 		log.Printf("⚠️ 重新加载用户交易员到内存失败: %v", err)
 		// 这里不返回错误，因为交易所配置已经成功更新到数据库
 	}
 
-	log.Printf("✓ 交易所配置已更新: %+v", SanitizeExchangeConfigForLog(req.Exchanges))
+	log.Printf("✓ 交易所配置已更新: %+v", req.Exchanges)
 	c.JSON(http.StatusOK, gin.H{"message": "交易所配置已更新"})
 }
 
@@ -1237,10 +1369,116 @@ func (s *Server) handleSaveUserSignalSource(c *gin.Context) {
 // handleTraderList trader列表
 func (s *Server) handleTraderList(c *gin.Context) {
 	userID := c.GetString("user_id")
-	traders, err := s.database.GetTraders(userID)
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取交易员列表失败: %v", err)})
+		// 向后兼容：如果获取失败，使用默认行为
+		traders, _ := s.database.GetTraders(userID)
+		result := make([]map[string]interface{}, 0, len(traders))
+		for _, trader := range traders {
+			isRunning := trader.IsRunning
+			if at, err := s.traderManager.GetTrader(trader.ID); err == nil {
+				status := at.GetStatus()
+				if running, ok := status["is_running"].(bool); ok {
+					isRunning = running
+				}
+			}
+			result = append(result, map[string]interface{}{
+				"trader_id":       trader.ID,
+				"trader_name":     trader.Name,
+				"ai_model":        trader.AIModelID,
+				"exchange_id":     trader.ExchangeID,
+				"is_running":      isRunning,
+				"initial_balance": trader.InitialBalance,
+			})
+		}
+		c.JSON(http.StatusOK, result)
 		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
+
+	var traders []*config.TraderRecord
+	switch role {
+	case "admin":
+		// 真正的管理员：返回所有交易员（跨用户，特殊角色，一般不使用）
+		traders, _ = s.database.GetAllTraders()
+	case "user":
+		// 普通用户：返回自己分类下的所有交易员，或owner_user_id为自己的交易员
+		userCategories, _ := s.database.GetUserCategories(userID)
+		if len(userCategories) == 0 {
+			// 向后兼容：如果没有分类，返回owner_user_id为该用户的交易员
+			traders, _ = s.database.GetTradersByOwnerUserID(userID)
+		} else {
+			// 返回分类下的交易员，以及owner_user_id为该用户但category为空的交易员
+			categoryTraders, _ := s.database.GetTradersByCategories(userCategories)
+			ownerTraders, _ := s.database.GetTradersByOwnerUserID(userID)
+			// 合并并去重
+			traderMap := make(map[string]*config.TraderRecord)
+			for _, t := range categoryTraders {
+				traderMap[t.ID] = t
+			}
+			for _, t := range ownerTraders {
+				// 只添加category为空或属于用户分类的交易员
+				if t.Category == "" || contains(userCategories, t.Category) {
+					traderMap[t.ID] = t
+				}
+			}
+			traders = make([]*config.TraderRecord, 0, len(traderMap))
+			for _, t := range traderMap {
+				traders = append(traders, t)
+			}
+		}
+	case "group_leader":
+		// 小组组长：返回观测的分类下的交易员
+		categories, _ := s.database.GetGroupLeaderCategories(userID)
+		traders, _ = s.database.GetTradersByCategories(categories)
+	case "trader_account":
+		// 交易员账号：返回自己的交易员
+		if user.TraderID != "" {
+			traderList, _ := s.database.GetTradersByID(user.TraderID)
+			if len(traderList) > 0 {
+				traders = traderList
+			} else {
+				traders = []*config.TraderRecord{}
+			}
+		} else {
+			traders = []*config.TraderRecord{}
+		}
+	default:
+		// 向后兼容：默认只返回自己的交易员（通过owner_user_id或分类）
+		userCategories, _ := s.database.GetUserCategories(userID)
+		if len(userCategories) == 0 {
+			traders, _ = s.database.GetTradersByOwnerUserID(userID)
+		} else {
+			categoryTraders, _ := s.database.GetTradersByCategories(userCategories)
+			ownerTraders, _ := s.database.GetTradersByOwnerUserID(userID)
+			log.Printf("[handleGetTraders] User categories: %v, categoryTraders: %d, ownerTraders: %d",
+				userCategories, len(categoryTraders), len(ownerTraders))
+			traderMap := make(map[string]*config.TraderRecord)
+			for _, t := range categoryTraders {
+				traderMap[t.ID] = t
+				log.Printf("[handleGetTraders] Category trader: ID=%s, Category=%s", t.ID, t.Category)
+			}
+			for _, t := range ownerTraders {
+				if t.Category == "" || contains(userCategories, t.Category) {
+					traderMap[t.ID] = t
+					log.Printf("[handleGetTraders] Owner trader: ID=%s, Category=%s, Included=%v",
+						t.ID, t.Category, t.Category == "" || contains(userCategories, t.Category))
+				} else {
+					log.Printf("[handleGetTraders] Owner trader excluded: ID=%s, Category=%s", t.ID, t.Category)
+				}
+			}
+			traders = make([]*config.TraderRecord, 0, len(traderMap))
+			for _, t := range traderMap {
+				traders = append(traders, t)
+			}
+			log.Printf("[handleGetTraders] Final traders count: %d", len(traders))
+		}
 	}
 
 	result := make([]map[string]interface{}, 0, len(traders))
@@ -1263,10 +1501,22 @@ func (s *Server) handleTraderList(c *gin.Context) {
 			"exchange_id":     trader.ExchangeID,
 			"is_running":      isRunning,
 			"initial_balance": trader.InitialBalance,
+			"category":        trader.Category,    // 添加分类字段
+			"owner_user_id":   trader.OwnerUserID, // 添加所有者用户ID字段
 		})
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+// contains 检查字符串切片是否包含指定字符串
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // handleGetTraderConfig 获取交易员详细配置
@@ -1276,6 +1526,65 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 
 	if traderID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "交易员ID不能为空"})
+		return
+	}
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
+
+	// 获取交易员信息
+	trader, err := s.database.GetTraderByID(traderID)
+	if err != nil || trader == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 权限检查
+	canAccess := false
+	switch role {
+	case "admin":
+		// 管理员可以访问所有交易员
+		canAccess = true
+	case "user":
+		// 普通用户：检查owner_user_id或分类权限
+		if trader.OwnerUserID == userID {
+			canAccess = true
+		} else if trader.Category != "" {
+			// 检查分类是否属于该用户
+			category, _ := s.database.GetCategoryByName(trader.Category)
+			if category != nil && category.OwnerUserID == userID {
+				canAccess = true
+			}
+		}
+	case "group_leader":
+		// 小组组长：检查交易员是否在管理的分类内
+		if trader.Category != "" {
+			categories, _ := s.database.GetGroupLeaderCategories(userID)
+			for _, cat := range categories {
+				if cat == trader.Category {
+					canAccess = true
+					break
+				}
+			}
+		}
+	case "trader_account":
+		// 交易员账号：检查是否是自己的交易员
+		if user.TraderID == traderID {
+			canAccess = true
+		}
+	}
+
+	if !canAccess {
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该交易员"})
 		return
 	}
 
@@ -1334,6 +1643,38 @@ func (s *Server) handleStatus(c *gin.Context) {
 
 	status := trader.GetStatus()
 	c.JSON(http.StatusOK, status)
+}
+
+// handleUserAccount 用户账户信息
+func (s *Server) handleUserAccount(c *gin.Context) {
+	userID := c.GetString("user_id")
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	// 构建响应
+	response := gin.H{
+		"id":    user.ID,
+		"email": user.Email,
+		"role":  user.Role,
+	}
+
+	// 如果是交易员账号，添加trader_id
+	if user.Role == "trader_account" && user.TraderID != "" {
+		response["trader_id"] = user.TraderID
+	}
+
+	// 如果是小组组长，添加categories
+	if user.Role == "group_leader" {
+		categories, _ := s.database.GetGroupLeaderCategories(userID)
+		response["categories"] = categories
+	} else {
+		response["categories"] = []string{}
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // handleAccount 账户信息
@@ -1652,6 +1993,36 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 	}
 }
 
+// handleAdminLogin 管理员登录（密码仅来自环境变量）
+func (s *Server) handleAdminLogin(c *gin.Context) {
+	if !auth.IsAdminMode() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "仅管理员模式可用"})
+		return
+	}
+
+	// 简单的IP速率限制（5次/分钟 + 递增退避）
+	// 为简化，此处省略复杂实现，可在后续使用中间件或Redis增强
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Password) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少密码"})
+		return
+	}
+	if !auth.CheckAdminPassword(req.Password) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
+		return
+	}
+
+	token, err := auth.GenerateJWT("admin", "admin@localhost")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成token失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"token": token, "user_id": "admin", "email": "admin@localhost"})
+}
+
 // handleLogout 将当前token加入黑名单
 func (s *Server) handleLogout(c *gin.Context) {
 	authHeader := c.GetHeader("Authorization")
@@ -1682,6 +2053,18 @@ func (s *Server) handleLogout(c *gin.Context) {
 
 // handleRegister 处理用户注册请求
 func (s *Server) handleRegister(c *gin.Context) {
+	// 管理员模式下禁用注册
+	if auth.IsAdminMode() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "管理员模式下禁用注册"})
+		return
+	}
+
+	// 若未开启注册，返回403
+	allowRegStr, _ := s.database.GetSystemConfig("allow_registration")
+	if allowRegStr == "false" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "注册已关闭"})
+		return
+	}
 
 	var req struct {
 		Email    string `json:"email" binding:"required,email"`
@@ -1744,6 +2127,7 @@ func (s *Server) handleRegister(c *gin.Context) {
 		PasswordHash: passwordHash,
 		OTPSecret:    otpSecret,
 		OTPVerified:  false,
+		Role:         "user", // 注册的用户默认是user角色（只能管理自己的交易员）
 	}
 
 	err = s.database.CreateUser(user)
@@ -1853,23 +2237,57 @@ func (s *Server) handleLogin(c *gin.Context) {
 		return
 	}
 
-	// 检查OTP是否已验证
-	if !user.OTPVerified {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":              "账户未完成OTP设置",
-			"user_id":            user.ID,
-			"requires_otp_setup": true,
-		})
-		return
+	// 获取用户角色（默认为user，向后兼容）
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
 	}
 
-	// 返回需要OTP验证的状态
-	c.JSON(http.StatusOK, gin.H{
-		"user_id":      user.ID,
-		"email":        user.Email,
-		"message":      "请输入Google Authenticator验证码",
-		"requires_otp": true,
-	})
+	// 根据角色决定是否需要OTP验证
+	if role == "admin" || role == "user" {
+		// 管理员或普通用户（注册用户）：需要OTP验证
+		if !user.OTPVerified {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error":              "账户未完成OTP设置",
+				"user_id":            user.ID,
+				"requires_otp_setup": true,
+			})
+			return
+		}
+
+		// 返回需要OTP验证的状态
+		c.JSON(http.StatusOK, gin.H{
+			"user_id":      user.ID,
+			"email":        user.Email,
+			"message":      "请输入Google Authenticator验证码",
+			"requires_otp": true,
+		})
+		return
+	} else {
+		// 创建的账号（group_leader 或 trader_account）：不需要OTP，直接登录
+		// 这些账号由普通用户创建，不需要OTP验证
+		token, err := auth.GenerateJWT(user.ID, user.Email)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "生成token失败"})
+			return
+		}
+
+		// 为 trader_account 返回 trader_id
+		responseData := gin.H{
+			"token":   token,
+			"user_id": user.ID,
+			"email":   user.Email,
+			"role":    role,
+			"message": "登录成功",
+		}
+
+		if role == "trader_account" {
+			responseData["trader_id"] = user.TraderID
+		}
+
+		c.JSON(http.StatusOK, responseData)
+		return
+	}
 }
 
 // handleVerifyOTP 验证OTP并完成登录
@@ -1987,22 +2405,7 @@ func (s *Server) handleGetSupportedExchanges(c *gin.Context) {
 		return
 	}
 
-	// 转换为安全的响应结构，移除敏感信息
-	safeExchanges := make([]SafeExchangeConfig, len(exchanges))
-	for i, exchange := range exchanges {
-		safeExchanges[i] = SafeExchangeConfig{
-			ID:                    exchange.ID,
-			Name:                  exchange.Name,
-			Type:                  exchange.Type,
-			Enabled:               exchange.Enabled,
-			Testnet:               exchange.Testnet,
-			HyperliquidWalletAddr: "", // 默认配置不包含钱包地址
-			AsterUser:             "", // 默认配置不包含用户信息
-			AsterSigner:           "",
-		}
-	}
-
-	c.JSON(http.StatusOK, safeExchanges)
+	c.JSON(http.StatusOK, exchanges)
 }
 
 // Start 启动服务器
@@ -2034,26 +2437,7 @@ func (s *Server) Start() error {
 	log.Printf("  • GET  /api/performance?trader_id=xxx - 指定trader的AI学习表现分析")
 	log.Println()
 
-	// 创建 http.Server 以支持 graceful shutdown
-	s.httpServer = &http.Server{
-		Addr:    addr,
-		Handler: s.router,
-	}
-
-	return s.httpServer.ListenAndServe()
-}
-
-// Shutdown 优雅关闭 API 服务器
-func (s *Server) Shutdown() error {
-	if s.httpServer == nil {
-		return nil
-	}
-
-	// 设置 5 秒超时
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	return s.httpServer.Shutdown(ctx)
+	return s.router.Run(addr)
 }
 
 // handleGetPromptTemplates 获取所有系统提示词模板列表
@@ -2296,4 +2680,1305 @@ func (s *Server) handleGetPublicTraderConfig(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+// generateRandomEmail 生成随机邮箱
+func generateRandomEmail() string {
+	randomStr := uuid.New().String()[:8]
+	return fmt.Sprintf("trader_%s@nofx.local", randomStr)
+}
+
+// generateRandomPassword 生成随机密码
+func generateRandomPassword(length int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
+}
+
+// handleCreateTraderAccount 创建交易员账号
+func (s *Server) handleCreateTraderAccount(c *gin.Context) {
+	userID := c.GetString("user_id")
+	traderID := c.Param("id")
+
+	// 检查用户角色（必须是admin或user）
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "权限不足"})
+		return
+	}
+
+	// 验证交易员是否存在
+	trader, err := s.database.GetTraderByID(traderID)
+	if err != nil || trader == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 如果不是admin，验证交易员是否属于当前用户
+	if user.Role != "admin" && trader.OwnerUserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "只能为自己的交易员创建账号"})
+		return
+	}
+
+	// 检查交易员是否已有账号
+	if trader.TraderAccountID != "" {
+		// 检查账号是否仍然存在
+		account, _ := s.database.GetUserByID(trader.TraderAccountID)
+		if account != nil {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":         "交易员已有账号",
+				"account_id":    trader.TraderAccountID,
+				"account_email": account.Email,
+			})
+			return
+		}
+		// 如果账号不存在，清除关联，允许重新创建
+		s.database.UpdateTraderAccountID(traderID, "")
+	}
+
+	var req struct {
+		GenerateRandomEmail    bool   `json:"generate_random_email"`
+		GenerateRandomPassword bool   `json:"generate_random_password"`
+		Email                  string `json:"email"`
+		Password               string `json:"password"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 验证必填字段
+	if !req.GenerateRandomEmail && req.Email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "账号未选择随机生成时，必须提供email"})
+		return
+	}
+	if !req.GenerateRandomPassword && req.Password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "密码未选择随机生成时，必须提供password"})
+		return
+	}
+
+	// 根据四种组合模式生成账号信息
+	var accountEmail, accountPassword string
+
+	// 1. 账号处理：随机生成或使用输入的
+	if req.GenerateRandomEmail {
+		// 随机生成邮箱，检查是否已存在
+		maxRetries := 10
+		for i := 0; i < maxRetries; i++ {
+			accountEmail = generateRandomEmail()
+			existing, _ := s.database.GetUserByEmail(accountEmail)
+			if existing == nil {
+				break // 邮箱可用
+			}
+		}
+		if accountEmail == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "无法生成唯一邮箱，请重试"})
+			return
+		}
+	} else {
+		accountEmail = req.Email
+		// 检查邮箱是否已存在
+		existing, _ := s.database.GetUserByEmail(accountEmail)
+		if existing != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "邮箱已存在"})
+			return
+		}
+	}
+
+	// 2. 密码处理：随机生成或使用输入的
+	if req.GenerateRandomPassword {
+		accountPassword = generateRandomPassword(12) // 12位随机密码
+	} else {
+		accountPassword = req.Password
+	}
+
+	// 创建用户（trader_account角色）
+	passwordHash, err := auth.HashPassword(accountPassword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码处理失败"})
+		return
+	}
+
+	newUserID := uuid.New().String()
+	newUser := &config.User{
+		ID:           newUserID,
+		Email:        accountEmail,
+		PasswordHash: passwordHash,
+		Role:         "trader_account",
+		TraderID:     traderID,
+		Category:     trader.Category, // 自动继承交易员的分类
+		OTPSecret:    "",              // 不需要OTP
+		OTPVerified:  true,            // 直接设置为已验证（跳过OTP）
+	}
+
+	err = s.database.CreateUser(newUser)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建用户失败: " + err.Error()})
+		return
+	}
+
+	// 更新交易员的trader_account_id
+	err = s.database.UpdateTraderAccountID(traderID, newUserID)
+	if err != nil {
+		log.Printf("⚠️ 更新交易员账号ID失败: %v", err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":   newUserID,
+		"email":     accountEmail,
+		"password":  accountPassword, // 返回密码（仅此一次）
+		"role":      "trader_account",
+		"trader_id": traderID,
+	})
+}
+
+// handleUpdateTraderAccountPassword 更新交易员账号密码
+func (s *Server) handleUpdateTraderAccountPassword(c *gin.Context) {
+	userID := c.GetString("user_id")
+	traderID := c.Param("id")
+
+	// 检查用户角色（必须是admin或user）
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "权限不足"})
+		return
+	}
+
+	// 验证交易员是否存在
+	trader, err := s.database.GetTraderByID(traderID)
+	if err != nil || trader == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 如果不是admin，验证交易员是否属于当前用户
+	// trader_account用户只能修改自己的账号密码
+	if user.Role == "trader_account" {
+		if trader.TraderAccountID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能修改自己的账号密码"})
+			return
+		}
+	} else if user.Role != "admin" && trader.OwnerUserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "只能修改自己交易员的账号密码"})
+		return
+	}
+
+	// 检查交易员是否有账号
+	if trader.TraderAccountID == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员还没有账号"})
+		return
+	}
+
+	var req struct {
+		Password string `json:"password" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "密码不能为空"})
+		return
+	}
+
+	// 更新密码
+	passwordHash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码处理失败"})
+		return
+	}
+
+	err = s.database.UpdateUserPassword(trader.TraderAccountID, passwordHash)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码更新失败: " + err.Error()})
+		return
+	}
+
+	log.Printf("✓ 交易员 %s 的账号密码已更新", traderID)
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "密码更新成功",
+		"password": req.Password, // 返回新密码（前端需要保存）
+	})
+}
+
+// handleCreateGroupLeader 创建小组组长账号
+func (s *Server) handleCreateGroupLeader(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	// 检查用户角色（必须是admin或user）
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "权限不足"})
+		return
+	}
+
+	var req struct {
+		GenerateRandomEmail    bool     `json:"generate_random_email"`
+		GenerateRandomPassword bool     `json:"generate_random_password"`
+		Email                  string   `json:"email"`
+		Password               string   `json:"password"`
+		Categories             []string `json:"categories" binding:"required"` // 必填：可以观测的分类列表
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 验证必填字段
+	if !req.GenerateRandomEmail && req.Email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "账号未选择随机生成时，必须提供email"})
+		return
+	}
+	if !req.GenerateRandomPassword && req.Password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "密码未选择随机生成时，必须提供password"})
+		return
+	}
+
+	// 如果不是admin，验证分类是否属于当前用户
+	if user.Role != "admin" {
+		userCategories, _ := s.database.GetUserCategories(userID)
+		for _, cat := range req.Categories {
+			if !contains(userCategories, cat) {
+				c.JSON(http.StatusForbidden, gin.H{"error": "只能为自己的分类创建小组组长"})
+				return
+			}
+		}
+	}
+
+	// 根据四种组合模式生成账号信息
+	var accountEmail, accountPassword string
+
+	// 1. 账号处理：随机生成或使用输入的
+	if req.GenerateRandomEmail {
+		// 随机生成邮箱，检查是否已存在
+		maxRetries := 10
+		for i := 0; i < maxRetries; i++ {
+			accountEmail = generateRandomEmail()
+			existing, _ := s.database.GetUserByEmail(accountEmail)
+			if existing == nil {
+				break // 邮箱可用
+			}
+		}
+		if accountEmail == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "无法生成唯一邮箱，请重试"})
+			return
+		}
+	} else {
+		accountEmail = req.Email
+		// 检查邮箱是否已存在
+		existing, _ := s.database.GetUserByEmail(accountEmail)
+		if existing != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "邮箱已存在"})
+			return
+		}
+	}
+
+	// 2. 密码处理：随机生成或使用输入的
+	if req.GenerateRandomPassword {
+		accountPassword = generateRandomPassword(12) // 12位随机密码
+	} else {
+		accountPassword = req.Password
+	}
+
+	// 创建用户（group_leader角色）
+	passwordHash, err := auth.HashPassword(accountPassword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码处理失败"})
+		return
+	}
+
+	newUserID := uuid.New().String()
+	newUser := &config.User{
+		ID:           newUserID,
+		Email:        accountEmail,
+		PasswordHash: passwordHash,
+		Role:         "group_leader",
+		OTPSecret:    "",   // 不需要OTP
+		OTPVerified:  true, // 直接设置为已验证（跳过OTP）
+	}
+
+	err = s.database.CreateUser(newUser)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建用户失败: " + err.Error()})
+		return
+	}
+
+	// 关联分类（group_leader_categories表）
+	// 注意：owner_user_id必须设置为创建者的用户ID，确保数据隔离
+	for _, cat := range req.Categories {
+		err := s.database.InsertGroupLeaderCategory(newUserID, cat, userID) // 第三个参数是owner_user_id
+		if err != nil {
+			// 如果关联失败，回滚用户创建
+			s.database.DeleteUser(newUserID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "创建小组组长失败"})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":    newUserID,
+		"email":      accountEmail,
+		"password":   accountPassword, // 返回密码（仅此一次）
+		"role":       "group_leader",
+		"categories": req.Categories,
+	})
+}
+
+// CreateGroupLeaderForCategoryRequest 为特定分类创建小组组长账号的请求
+type CreateGroupLeaderForCategoryRequest struct {
+	GenerateRandomEmail    *bool  `json:"generate_random_email,omitempty"`
+	GenerateRandomPassword *bool  `json:"generate_random_password,omitempty"`
+	Email                  string `json:"email,omitempty"`
+	Password               string `json:"password,omitempty"`
+	Category               string `json:"category"` // 单个分类
+}
+
+// handleCreateGroupLeaderForCategory 为特定分类创建小组组长账号
+func (s *Server) handleCreateGroupLeaderForCategory(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	var req CreateGroupLeaderForCategoryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求参数"})
+		return
+	}
+
+	// 验证分类是否存在且属于当前用户
+	cat, err := s.database.GetCategoryByName(req.Category)
+	if err != nil || cat == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "分类不存在"})
+		return
+	}
+	if cat.OwnerUserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "只能为自己的分类创建小组组长"})
+		return
+	}
+
+	// 生成账号和密码
+	accountEmail := req.Email
+	accountPassword := req.Password
+
+	if req.GenerateRandomEmail == nil || *req.GenerateRandomEmail {
+		// 生成随机邮箱
+		randomSuffix := fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
+		accountEmail = fmt.Sprintf("groupleader_%s@random.local", randomSuffix)
+	}
+
+	if req.GenerateRandomPassword == nil || *req.GenerateRandomPassword {
+		// 生成随机密码
+		const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+		passwordBytes := make([]byte, 12)
+		for i := range passwordBytes {
+			passwordBytes[i] = charset[rand.Intn(len(charset))]
+		}
+		accountPassword = string(passwordBytes)
+	}
+
+	// 创建用户（group_leader角色）
+	passwordHash, err := auth.HashPassword(accountPassword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码处理失败"})
+		return
+	}
+
+	newUserID := uuid.New().String()
+	newUser := &config.User{
+		ID:           newUserID,
+		Email:        accountEmail,
+		PasswordHash: passwordHash,
+		Role:         "group_leader",
+		OTPSecret:    "",   // 不需要OTP
+		OTPVerified:  true, // 直接设置为已验证（跳过OTP）
+	}
+
+	err = s.database.CreateUser(newUser)
+	if err != nil {
+		log.Printf("创建用户失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建账号失败"})
+		return
+	}
+
+	// 关联分类（group_leader_categories表）
+	err = s.database.InsertGroupLeaderCategory(newUserID, req.Category, userID)
+	if err != nil {
+		log.Printf("关联分类失败: %v", err)
+		// 清理已创建的用户
+		s.database.DeleteUser(newUserID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建小组组长失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":    newUserID,
+		"email":      accountEmail,
+		"password":   accountPassword, // 返回密码（仅此一次）
+		"role":       "group_leader",
+		"categories": []string{req.Category},
+	})
+}
+
+// handleGetTraderAccount 获取交易员的账号信息
+func (s *Server) handleGetTraderAccount(c *gin.Context) {
+	userID := c.GetString("user_id")
+	traderID := c.Param("id")
+
+	// 检查用户角色（必须是admin、user或trader_account）
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" && user.Role != "trader_account" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "权限不足"})
+		return
+	}
+
+	// 验证交易员是否存在
+	trader, err := s.database.GetTraderByID(traderID)
+	if err != nil || trader == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 如果不是admin，验证交易员是否属于当前用户
+	// trader_account用户只能查看自己的账号信息
+	if user.Role == "trader_account" {
+		if trader.TraderAccountID != userID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能查看自己的账号信息"})
+			return
+		}
+	} else if user.Role != "admin" && trader.OwnerUserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "只能查看自己交易员的账号信息"})
+		return
+	}
+
+	// 检查交易员是否有账号
+	if trader.TraderAccountID == "" {
+		c.JSON(http.StatusOK, gin.H{"account": nil})
+		return
+	}
+
+	// 获取账号信息
+	account, err := s.database.GetUserByID(trader.TraderAccountID)
+	if err != nil || account == nil {
+		// 账号不存在，清除关联
+		s.database.UpdateTraderAccountID(traderID, "")
+		c.JSON(http.StatusOK, gin.H{"account": nil})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"account": gin.H{
+			"user_id":    account.ID,
+			"email":      account.Email,
+			"created_at": account.CreatedAt,
+		},
+	})
+}
+
+// handleDeleteTraderAccount 删除交易员的账号
+func (s *Server) handleDeleteTraderAccount(c *gin.Context) {
+	userID := c.GetString("user_id")
+	traderID := c.Param("id")
+
+	// 检查用户角色（必须是admin或user）
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "权限不足"})
+		return
+	}
+
+	// 验证交易员是否存在
+	trader, err := s.database.GetTraderByID(traderID)
+	if err != nil || trader == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 如果不是admin，验证交易员是否属于当前用户
+	if user.Role != "admin" && trader.OwnerUserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "只能删除自己交易员的账号"})
+		return
+	}
+
+	// 检查交易员是否有账号
+	if trader.TraderAccountID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "交易员没有账号"})
+		return
+	}
+
+	// 删除账号
+	err = s.database.DeleteUser(trader.TraderAccountID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除账号失败: " + err.Error()})
+		return
+	}
+
+	// 清除交易员的账号关联
+	err = s.database.UpdateTraderAccountID(traderID, "")
+	if err != nil {
+		log.Printf("⚠️ 清除交易员账号关联失败: %v", err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "账号已删除"})
+}
+
+// handleGetGroupLeaders 获取小组组长列表
+func (s *Server) handleGetGroupLeaders(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
+
+	// 获取所有小组组长
+	allUsers, err := s.database.GetAllUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取用户列表失败"})
+		return
+	}
+
+	var leaders []gin.H
+	for _, uid := range allUsers {
+		u, err := s.database.GetUserByID(uid)
+		if err != nil || u.Role != "group_leader" {
+			continue
+		}
+
+		// 如果不是admin，只返回当前用户创建的小组组长
+		if role != "admin" {
+			// 检查该小组组长是否由当前用户创建（通过group_leader_categories表的owner_user_id）
+			categories, _ := s.database.GetGroupLeaderCategories(uid)
+			isCreatedByUser := false
+			for _, cat := range categories {
+				category, _ := s.database.GetCategoryByName(cat)
+				if category != nil && category.OwnerUserID == userID {
+					isCreatedByUser = true
+					break
+				}
+			}
+			if !isCreatedByUser {
+				continue
+			}
+		}
+
+		// 获取该小组组长管理的分类
+		categories, _ := s.database.GetGroupLeaderCategories(uid)
+
+		// 统计该小组组长可以查看的交易员数量
+		traders, _ := s.database.GetTradersByCategories(categories)
+		traderCount := len(traders)
+
+		leaders = append(leaders, gin.H{
+			"id":           u.ID,
+			"email":        u.Email,
+			"role":         u.Role,
+			"categories":   categories,
+			"trader_count": traderCount,
+			"created_at":   u.CreatedAt,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"leaders": leaders})
+}
+
+// handleUpdateGroupLeaderCategories 更新小组组长的分类
+func (s *Server) handleUpdateGroupLeaderCategories(c *gin.Context) {
+	userID := c.GetString("user_id")
+	groupLeaderID := c.Param("id")
+
+	// 检查用户角色（必须是admin或user）
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "权限不足"})
+		return
+	}
+
+	// 验证小组组长是否存在
+	groupLeader, err := s.database.GetUserByID(groupLeaderID)
+	if err != nil || groupLeader == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "小组组长不存在"})
+		return
+	}
+
+	if groupLeader.Role != "group_leader" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "该用户不是小组组长"})
+		return
+	}
+
+	// 如果不是admin，验证小组组长是否由当前用户创建
+	if user.Role != "admin" {
+		existingCategories, _ := s.database.GetGroupLeaderCategories(groupLeaderID)
+		isCreatedByUser := false
+		for _, cat := range existingCategories {
+			category, _ := s.database.GetCategoryByName(cat)
+			if category != nil && category.OwnerUserID == userID {
+				isCreatedByUser = true
+				break
+			}
+		}
+		if !isCreatedByUser {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能更新自己创建的小组组长的分类"})
+			return
+		}
+	}
+
+	var req struct {
+		Categories []string `json:"categories" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 如果不是admin，验证分类是否属于当前用户
+	if user.Role != "admin" {
+		userCategories, _ := s.database.GetUserCategories(userID)
+		for _, cat := range req.Categories {
+			if !contains(userCategories, cat) {
+				c.JSON(http.StatusForbidden, gin.H{"error": "只能使用自己的分类"})
+				return
+			}
+		}
+	}
+
+	// 删除现有的分类关联
+	err = s.database.DeleteGroupLeaderCategories(groupLeaderID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新分类失败: " + err.Error()})
+		return
+	}
+
+	// 添加新的分类关联
+	for _, cat := range req.Categories {
+		ownerUserID := userID
+		if user.Role == "admin" {
+			// Admin可以设置任何分类，需要找到分类的所有者
+			category, _ := s.database.GetCategoryByName(cat)
+			if category != nil {
+				ownerUserID = category.OwnerUserID
+			}
+		}
+		err := s.database.InsertGroupLeaderCategory(groupLeaderID, cat, ownerUserID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新分类失败: " + err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "分类已更新",
+		"categories": req.Categories,
+	})
+}
+
+// handleDeleteGroupLeader 删除小组组长账号
+func (s *Server) handleDeleteGroupLeader(c *gin.Context) {
+	userID := c.GetString("user_id")
+	groupLeaderID := c.Param("id")
+
+	// 检查用户角色（必须是admin或user）
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "权限不足"})
+		return
+	}
+
+	// 验证小组组长是否存在
+	groupLeader, err := s.database.GetUserByID(groupLeaderID)
+	if err != nil || groupLeader == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "小组组长不存在"})
+		return
+	}
+
+	if groupLeader.Role != "group_leader" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "该用户不是小组组长"})
+		return
+	}
+
+	// 如果不是admin，验证小组组长是否由当前用户创建
+	if user.Role != "admin" {
+		categories, _ := s.database.GetGroupLeaderCategories(groupLeaderID)
+		isCreatedByUser := false
+		for _, cat := range categories {
+			category, _ := s.database.GetCategoryByName(cat)
+			if category != nil && category.OwnerUserID == userID {
+				isCreatedByUser = true
+				break
+			}
+		}
+		if !isCreatedByUser {
+			c.JSON(http.StatusForbidden, gin.H{"error": "只能删除自己创建的小组组长"})
+			return
+		}
+	}
+
+	// 删除账号（会自动删除group_leader_categories中的关联，通过FOREIGN KEY CASCADE）
+	err = s.database.DeleteUser(groupLeaderID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除小组组长失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "小组组长已删除"})
+}
+
+// handleGetCategories 获取分类列表
+func (s *Server) handleGetCategories(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	var categories []*config.Category
+	if user.Role == "admin" {
+		// Admin可以查看所有分类（特殊角色，一般不使用）
+		// 这里简化处理，只返回当前用户的分类
+		categories, _ = s.database.GetCategoriesByOwner(userID)
+	} else {
+		// User只能查看自己创建的分类
+		categories, _ = s.database.GetCategoriesByOwner(userID)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"categories": categories})
+}
+
+// handleCreateCategory 创建分类
+func (s *Server) handleCreateCategory(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	// 检查用户角色（必须是admin或user）
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "权限不足"})
+		return
+	}
+
+	var req struct {
+		Name        string `json:"name" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 检查分类名称是否已存在（同一用户下）
+	existing, _ := s.database.GetCategoryByNameAndOwner(req.Name, userID)
+	if existing != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "分类名称已存在"})
+		return
+	}
+
+	category, err := s.database.CreateCategory(userID, req.Name, req.Description)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建分类失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, category)
+}
+
+// handleUpdateCategory 更新分类信息
+func (s *Server) handleUpdateCategory(c *gin.Context) {
+	userID := c.GetString("user_id")
+	categoryIDStr := c.Param("id")
+	categoryID, err := strconv.Atoi(categoryIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的分类ID"})
+		return
+	}
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	// 获取分类信息
+	category, err := s.database.GetCategoryByID(categoryID)
+	if err != nil || category == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "分类不存在"})
+		return
+	}
+
+	// 权限检查：如果不是admin，验证分类是否属于当前用户
+	if user.Role != "admin" && category.OwnerUserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "只能修改自己的分类"})
+		return
+	}
+
+	var req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 如果修改了名称，检查新名称是否已存在（同一用户下）
+	if req.Name != "" && req.Name != category.Name {
+		existing, _ := s.database.GetCategoryByNameAndOwner(req.Name, userID)
+		if existing != nil && existing.ID != categoryID {
+			c.JSON(http.StatusConflict, gin.H{"error": "分类名称已存在"})
+			return
+		}
+	}
+
+	// 更新分类
+	err = s.database.UpdateCategory(categoryID, req.Name, req.Description)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新分类失败: " + err.Error()})
+		return
+	}
+
+	// 返回更新后的分类信息
+	updatedCategory, _ := s.database.GetCategoryByID(categoryID)
+	c.JSON(http.StatusOK, updatedCategory)
+}
+
+// handleDeleteCategory 删除分类
+func (s *Server) handleDeleteCategory(c *gin.Context) {
+	userID := c.GetString("user_id")
+	categoryIDStr := c.Param("id")
+	categoryID, err := strconv.Atoi(categoryIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的分类ID"})
+		return
+	}
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	// 获取分类信息
+	category, err := s.database.GetCategoryByID(categoryID)
+	if err != nil || category == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "分类不存在"})
+		return
+	}
+
+	// 权限检查：如果不是admin，验证分类是否属于当前用户
+	if user.Role != "admin" && category.OwnerUserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "只能删除自己的分类"})
+		return
+	}
+
+	categoryName := category.Name
+
+	// 1. 将该分类下的所有交易员的category设为空字符串
+	err = s.database.UpdateTradersCategoryToEmpty(categoryName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新交易员分类失败"})
+		return
+	}
+
+	// 2. 删除分类（会自动删除group_leader_categories中的关联，通过FOREIGN KEY CASCADE）
+	err = s.database.DeleteCategory(categoryID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除分类失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "分类删除成功",
+		"category_name": categoryName,
+	})
+}
+
+// handleSetTraderCategory 设置交易员分类
+func (s *Server) handleSetTraderCategory(c *gin.Context) {
+	userID := c.GetString("user_id")
+	traderID := c.Param("id")
+
+	// 检查用户角色（必须是admin或user）
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	if user.Role != "admin" && user.Role != "user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "权限不足"})
+		return
+	}
+
+	var req struct {
+		Category string `json:"category"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 验证交易员是否存在
+	trader, err := s.database.GetTraderByID(traderID)
+	if err != nil || trader == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
+	}
+
+	// 如果不是admin，验证交易员是否属于当前用户
+	if user.Role != "admin" && trader.OwnerUserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "只能设置自己交易员的分类"})
+		return
+	}
+
+	// 如果提供了分类，验证分类是否属于当前用户
+	if req.Category != "" {
+		if user.Role != "admin" {
+			category, err := s.database.GetCategoryByName(req.Category)
+			if err != nil || category == nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "分类不存在"})
+				return
+			}
+			if category.OwnerUserID != userID {
+				c.JSON(http.StatusForbidden, gin.H{"error": "只能使用自己的分类"})
+				return
+			}
+		}
+	}
+
+	// 更新交易员分类
+	err = s.database.UpdateTraderCategory(traderID, req.Category)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新交易员分类失败: " + err.Error()})
+		return
+	}
+
+	// 验证更新是否成功
+	updatedTrader, err := s.database.GetTraderByID(traderID)
+	if err == nil && updatedTrader != nil {
+		log.Printf("[handleSetTraderCategory] Updated trader: ID=%s, Category=%s, OwnerUserID=%s",
+			updatedTrader.ID, updatedTrader.Category, updatedTrader.OwnerUserID)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "交易员分类已更新"})
+}
+
+// handleGetCategoryAccounts 获取分类账号列表
+// 新逻辑：先获取分类下的交易员，然后通过 trader_account_id 找到对应的账号
+func (s *Server) handleGetCategoryAccounts(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user" // 默认是普通用户
+	}
+
+	var accounts []gin.H
+	var visibleCategories []string
+
+	// 根据用户角色确定可见的分类
+	if role == "admin" {
+		// 管理员可以看到所有分类
+		allCategories, _ := s.database.GetAllCategories()
+		for _, cat := range allCategories {
+			visibleCategories = append(visibleCategories, cat.Name)
+		}
+	} else if role == "group_leader" {
+		// 小组组长可以看到自己管理的分类
+		visibleCategories, _ = s.database.GetGroupLeaderCategories(userID)
+	} else if role == "user" {
+		// 普通用户可以看到自己创建的分类
+		allCategories, _ := s.database.GetAllCategories()
+		for _, cat := range allCategories {
+			if cat != nil && cat.OwnerUserID == userID {
+				visibleCategories = append(visibleCategories, cat.Name)
+			}
+		}
+	}
+
+	// 1. 先获取所有可见分类下的交易员（traders）
+	traders, _ := s.database.GetTradersByCategories(visibleCategories)
+	log.Printf("📊 找到 %d 个交易员，分类: %v", len(traders), visibleCategories)
+
+	// 2. 通过每个 trader 的 trader_account_id 找到对应的账号
+	traderAccountMap := make(map[string]*config.TraderRecord) // trader_account_id -> trader
+	for _, trader := range traders {
+		if trader.TraderAccountID != "" {
+			traderAccountMap[trader.TraderAccountID] = trader
+		}
+	}
+
+	// 3. 获取这些账号的用户信息
+	for accountID, trader := range traderAccountMap {
+		accountUser, err := s.database.GetUserByID(accountID)
+		if err != nil || accountUser == nil {
+			log.Printf("⚠️ 找不到账号: account_id=%s, trader_id=%s", accountID, trader.ID)
+			continue
+		}
+
+		accounts = append(accounts, gin.H{
+			"id":         accountUser.ID,
+			"email":      accountUser.Email,
+			"role":       "trader_account", // 明确标记为交易员账号
+			"category":   trader.Category,
+			"trader_id":  trader.ID,
+			"created_at": accountUser.CreatedAt,
+		})
+		log.Printf("✅ 找到交易员账号: email=%s, trader_id=%s, category=%s", accountUser.Email, trader.ID, trader.Category)
+	}
+
+	// 4. 获取小组组长账号（通过 group_leader_categories 表）
+	for _, categoryName := range visibleCategories {
+		// 查找管理这个分类的小组组长
+		allUsers, _ := s.database.GetAllUsers()
+		for _, uid := range allUsers {
+			u, err := s.database.GetUserByID(uid)
+			if err != nil || u.Role != "group_leader" {
+				continue
+			}
+
+			// 检查这个小组组长是否管理当前分类
+			categories, _ := s.database.GetGroupLeaderCategories(uid)
+			for _, cat := range categories {
+				if cat == categoryName {
+					// 检查权限
+					if role != "admin" {
+						if role == "user" {
+							// 普通用户只能看到自己创建的分类下的小组组长
+							categoryObj, _ := s.database.GetCategoryByName(categoryName)
+							if categoryObj == nil || categoryObj.OwnerUserID != userID {
+								continue
+							}
+						}
+						// group_leader 可以看到管理相同分类的其他小组组长
+					}
+
+					accounts = append(accounts, gin.H{
+						"id":         u.ID,
+						"email":      u.Email,
+						"role":       "group_leader",
+						"category":   categoryName,
+						"trader_id":  nil,
+						"created_at": u.CreatedAt,
+					})
+					log.Printf("✅ 找到小组组长账号: email=%s, category=%s", u.Email, categoryName)
+					break
+				}
+			}
+		}
+	}
+
+	log.Printf("📊 返回账号列表，共 %d 个账号", len(accounts))
+	c.JSON(http.StatusOK, accounts)
+}
+
+// handleGetCategoryAccountInfo 获取分类账号信息
+func (s *Server) handleGetCategoryAccountInfo(c *gin.Context) {
+	userID := c.GetString("user_id")
+	accountID := c.Param("id")
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user"
+	}
+
+	// 获取账号信息
+	account, err := s.database.GetUserByID(accountID)
+	if err != nil || account == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "账号不存在"})
+		return
+	}
+
+	if account.Role != "group_leader" && account.Role != "trader_account" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "账号不存在"})
+		return
+	}
+
+	// 权限检查：如果不是admin，验证账号是否属于当前用户
+	if role != "admin" {
+		hasPermission := false
+		if account.Role == "group_leader" {
+			categories, _ := s.database.GetGroupLeaderCategories(accountID)
+			for _, cat := range categories {
+				category, _ := s.database.GetCategoryByName(cat)
+				if category != nil && category.OwnerUserID == userID {
+					hasPermission = true
+					break
+				}
+			}
+		} else if account.Role == "trader_account" {
+			trader, _ := s.database.GetTraderByID(account.Email)
+			if trader != nil && trader.OwnerUserID == userID {
+				hasPermission = true
+			}
+		}
+		if !hasPermission {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权查看此账号"})
+			return
+		}
+	}
+
+	// 获取密码（如果是第一次获取，需要解密存储的密码）
+	password := ""
+	if account.PasswordHash != "" {
+		// 密码是明文存储的（不安全，但在用户要求下这样做）
+		password = account.PasswordHash
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":       account.ID,
+		"email":    account.Email,
+		"role":     account.Role,
+		"password": password,
+	})
+}
+
+// handleUpdateCategoryAccountPassword 更新分类账号密码
+func (s *Server) handleUpdateCategoryAccountPassword(c *gin.Context) {
+	userID := c.GetString("user_id")
+	accountID := c.Param("id")
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user"
+	}
+
+	// 获取账号信息
+	account, err := s.database.GetUserByID(accountID)
+	if err != nil || account == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "账号不存在"})
+		return
+	}
+
+	if account.Role != "group_leader" && account.Role != "trader_account" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的账号类型"})
+		return
+	}
+
+	// 权限检查：如果不是admin，验证账号是否属于当前用户
+	if role != "admin" {
+		hasPermission := false
+		if account.Role == "group_leader" {
+			categories, _ := s.database.GetGroupLeaderCategories(accountID)
+			for _, cat := range categories {
+				category, _ := s.database.GetCategoryByName(cat)
+				if category != nil && category.OwnerUserID == userID {
+					hasPermission = true
+					break
+				}
+			}
+		} else if account.Role == "trader_account" {
+			trader, _ := s.database.GetTraderByID(account.Email)
+			if trader != nil && trader.OwnerUserID == userID {
+				hasPermission = true
+			}
+		}
+		if !hasPermission {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权修改此账号"})
+			return
+		}
+	}
+
+	var req struct {
+		Password string `json:"password" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 哈希新密码
+	hashedPassword, err := auth.HashPassword(req.Password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码处理失败"})
+		return
+	}
+
+	// 更新密码
+	err = s.database.UpdateUserPassword(accountID, hashedPassword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新密码失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "密码已更新"})
 }

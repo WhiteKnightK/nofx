@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import useSWR from 'swr'
 import { api } from '../lib/api'
 import type {
@@ -29,7 +29,13 @@ import {
   BookOpen,
   HelpCircle,
   Radio,
+  Copy,
+  Check,
+  ChevronDown,
+  User,
+  Eye,
 } from 'lucide-react'
+import { ToastContainer, ModernModal } from './Toast'
 
 // 获取友好的AI模型名称
 function getModelDisplayName(modelId: string): string {
@@ -58,11 +64,122 @@ interface AITradersPageProps {
 export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   const { language } = useLanguage()
   const { user, token } = useAuth()
+  
+  // 获取用户角色（默认为user，向后兼容）
+  const userRole = user?.role || 'user'
+  
+  // 判断权限
+  const isUser = userRole === 'user' || userRole === 'admin' // admin和user都可以配置
+  const canEdit = isUser // 普通用户和管理员可以编辑自己的交易员
+  const canCreate = isUser // 普通用户和管理员可以创建交易员
+  const canDelete = isUser // 普通用户和管理员可以删除自己的交易员
+  const canManageConfig = isUser // 配置功能（普通用户和管理员可以配置）
+  const canCreateAccount = isUser // 普通用户和管理员可以创建交易员账号
+  const canManageCategories = userRole === 'user' || userRole === 'admin' // 只有普通用户和管理员可以管理分类，小组组长和交易员看不到
+  
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showModelModal, setShowModelModal] = useState(false)
   const [showExchangeModal, setShowExchangeModal] = useState(false)
   const [showSignalSourceModal, setShowSignalSourceModal] = useState(false)
+  const [showCreateTraderAccountModal, setShowCreateTraderAccountModal] = useState(false)
+  const [showCreateCategoryModal, setShowCreateCategoryModal] = useState(false)
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set())
+  const [showCategoryDetailModal, setShowCategoryDetailModal] = useState(false)
+  const [selectedCategoryForDetail, setSelectedCategoryForDetail] = useState<any>(null)
+  const [showCreateCategoryAccountModal, setShowCreateCategoryAccountModal] = useState(false)
+  const [showCategoryAccountListModal, setShowCategoryAccountListModal] = useState(false)
+  const [showCategoryAccountPage, setShowCategoryAccountPage] = useState(false)
+  const [selectedCategoryForAccount, setSelectedCategoryForAccount] = useState<any>(null)
+  const [selectedAccountInfo, setSelectedAccountInfo] = useState<any>(null)
+  const [categoryAccounts, setCategoryAccounts] = useState<Array<{
+    id: string
+    email: string
+    role: string
+    trader_id?: string
+    category: string
+    created_at: string
+  }>>([])
+  // 从localStorage加载分类账号
+  const loadCategoryAccountsFromStorage = (): Record<string, { email: string; password: string }> => {
+    try {
+      const stored = localStorage.getItem('category_accounts')
+      return stored ? JSON.parse(stored) : {}
+    } catch (error) {
+      console.error('Failed to load category accounts from storage:', error)
+    }
+    return {}
+  }
+
+  // 保存分类账号密码到localStorage
+  const saveCategoryAccountsToStorage = (accounts: Record<string, { email: string; password: string }>) => {
+    try {
+      localStorage.setItem('category_accounts', JSON.stringify(accounts))
+    } catch (error) {
+      console.error('Failed to save category accounts to storage:', error)
+    }
+  }
+
+  const [categoryAccountPasswords, setCategoryAccountPasswords] = useState<Record<string, { email: string; password: string }>>(
+    loadCategoryAccountsFromStorage()
+  )
+  const [groupLeaders, setGroupLeaders] = useState<Array<{
+    id: string
+    email: string
+    role: string
+    categories: string[]
+    trader_count: number
+    created_at: string
+  }>>([])
+  const [forceRefresh, setForceRefresh] = useState(0) // 强制刷新计数器
+  const [creatingAccountForTrader, setCreatingAccountForTrader] = useState<string | null>(null)
+  const [showTraderAccountInfoModal, setShowTraderAccountInfoModal] = useState(false)
+  const [traderAccountInfo, setTraderAccountInfo] = useState<{
+    traderId: string
+    email: string
+    password: string
+  } | null>(null)
+  // 从localStorage加载保存的账号密码信息
+  const loadTraderAccountsFromStorage = (): Record<string, { email: string; password: string }> => {
+    try {
+      const stored = localStorage.getItem('trader_accounts')
+      if (stored) {
+        return JSON.parse(stored)
+      }
+    } catch (error) {
+      console.error('Failed to load trader accounts from storage:', error)
+    }
+    return {}
+  }
+
+  const [traderAccounts, setTraderAccounts] = useState<Record<string, { email: string; password: string }>>(
+    loadTraderAccountsFromStorage()
+  )
+  const [traderHasAccount, setTraderHasAccount] = useState<Record<string, boolean>>({})
+
+
+  // 保存账号密码到localStorage
+  const saveTraderAccountsToStorage = (accounts: Record<string, { email: string; password: string }>) => {
+    try {
+      localStorage.setItem('trader_accounts', JSON.stringify(accounts))
+    } catch (error) {
+      console.error('Failed to save trader accounts to storage:', error)
+    }
+  }
+
+  const [categories, setCategories] = useState<any[]>([])
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'error' | 'warning' | 'info' }>>([])
+  
+  // 显示Toast提示
+  const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
+    const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    setToasts((prev) => [...prev, { id, message, type }])
+  }
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id))
+  }
+
   const [editingModel, setEditingModel] = useState<string | null>(null)
   const [editingExchange, setEditingExchange] = useState<string | null>(null)
   const [editingTrader, setEditingTrader] = useState<any>(null)
@@ -83,6 +200,30 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     api.getTraders,
     { refreshInterval: 5000 }
   )
+
+  // 检查交易员是否有账号（用于显示按钮文本）
+  useEffect(() => {
+    const loadTraderAccountStatus = async () => {
+      if (!traders || traders.length === 0) return
+      
+      const accountStatus: Record<string, boolean> = {}
+      await Promise.all(
+        traders.map(async (trader) => {
+          try {
+            const result = await api.getTraderAccount(trader.trader_id)
+            accountStatus[trader.trader_id] = !!result.account
+          } catch (error) {
+            accountStatus[trader.trader_id] = false
+          }
+        })
+      )
+      setTraderHasAccount(accountStatus)
+    }
+    
+    if (user && token && traders) {
+      loadTraderAccountStatus()
+    }
+  }, [traders, user, token])
 
   // 加载AI模型和交易所配置
   useEffect(() => {
@@ -129,12 +270,25 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         } catch (error) {
           console.log('📡 用户信号源配置暂未设置')
         }
+
+        // 加载分类列表（如果用户有权限）
+        if (canManageCategories) {
+          try {
+            const categoriesList = await api.getCategories()
+            setCategories(categoriesList)
+            // 同时加载账号和小组组长列表
+            await loadCategoryAccounts()
+            await loadGroupLeaders()
+          } catch (error) {
+            console.error('Failed to load categories:', error)
+          }
+        }
       } catch (error) {
         console.error('Failed to load configs:', error)
       }
     }
     loadConfigs()
-  }, [user, token])
+  }, [user, token, canManageCategories])
 
   // 只显示已配置的模型和交易所
   // 注意：后端返回的数据不包含敏感信息（apiKey等），所以通过其他字段判断是否已配置
@@ -220,12 +374,12 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       const exchange = allExchanges?.find((e) => e.id === data.exchange_id)
 
       if (!model?.enabled) {
-        alert(t('modelNotConfigured', language))
+        showToast(t('modelNotConfigured', language), 'warning')
         return
       }
 
       if (!exchange?.enabled) {
-        alert(t('exchangeNotConfigured', language))
+        showToast(t('exchangeNotConfigured', language), 'warning')
         return
       }
 
@@ -234,7 +388,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       mutateTraders()
     } catch (error) {
       console.error('Failed to create trader:', error)
-      alert(t('createTraderFailed', language))
+      showToast(t('createTraderFailed', language), 'error')
     }
   }
 
@@ -245,7 +399,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       setShowEditModal(true)
     } catch (error) {
       console.error('Failed to fetch trader config:', error)
-      alert(t('getTraderConfigFailed', language))
+      showToast(t('getTraderConfigFailed', language), 'error')
     }
   }
 
@@ -257,12 +411,12 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       const exchange = enabledExchanges?.find((e) => e.id === data.exchange_id)
 
       if (!model) {
-        alert(t('modelConfigNotExist', language))
+        showToast(t('modelConfigNotExist', language), 'warning')
         return
       }
 
       if (!exchange) {
-        alert(t('exchangeConfigNotExist', language))
+        showToast(t('exchangeConfigNotExist', language), 'warning')
         return
       }
 
@@ -288,7 +442,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       mutateTraders()
     } catch (error) {
       console.error('Failed to update trader:', error)
-      alert(t('updateTraderFailed', language))
+      showToast(t('updateTraderFailed', language), 'error')
     }
   }
 
@@ -300,7 +454,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       mutateTraders()
     } catch (error) {
       console.error('Failed to delete trader:', error)
-      alert(t('deleteTraderFailed', language))
+      showToast(t('deleteTraderFailed', language), 'error')
     }
   }
 
@@ -314,11 +468,12 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       mutateTraders()
     } catch (error) {
       console.error('Failed to toggle trader:', error)
-      alert(t('operationFailed', language))
+      showToast(t('operationFailed', language), 'error')
     }
   }
 
   const handleModelClick = (modelId: string) => {
+    if (!canManageConfig) return // 没有权限，不处理
     if (!isModelInUse(modelId)) {
       setEditingModel(modelId)
       setShowModelModal(true)
@@ -326,6 +481,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   }
 
   const handleExchangeClick = (exchangeId: string) => {
+    if (!canManageConfig) return // 没有权限，不处理
     if (!isExchangeInUse(exchangeId)) {
       setEditingExchange(exchangeId)
       setShowExchangeModal(true)
@@ -353,14 +509,9 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     if (config.checkInUse(config.id)) {
       const usingTraders = config.getUsingTraders(config.id)
       const traderNames = usingTraders.map((t) => t.trader_name).join(', ')
-      alert(
-        t(config.cannotDeleteKey, language) +
-          '\n\n' +
-          t('tradersUsing', language) +
-          ': ' +
-          traderNames +
-          '\n\n' +
-          t('pleaseDeleteTradersFirst', language)
+      showToast(
+        `${t(config.cannotDeleteKey, language)} - ${t('tradersUsing', language)}: ${traderNames}`,
+        'warning'
       )
       return
     }
@@ -383,7 +534,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       config.closeModal()
     } catch (error) {
       console.error(`Failed to delete ${config.type} config:`, error)
-      alert(t(config.errorKey, language))
+      showToast(t(config.errorKey, language), 'error')
     }
   }
 
@@ -445,7 +596,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       const modelToUpdate =
         existingModel || supportedModels?.find((m) => m.id === modelId)
       if (!modelToUpdate) {
-        alert(t('modelNotExist', language))
+        showToast(t('modelNotExist', language), 'warning')
         return
       }
 
@@ -499,7 +650,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       setEditingModel(null)
     } catch (error) {
       console.error('Failed to save model config:', error)
-      alert(t('saveConfigFailed', language))
+      showToast(t('saveConfigFailed', language), 'error')
     }
   }
 
@@ -569,7 +720,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         (e) => e.id === exchangeId
       )
       if (!exchangeToUpdate) {
-        alert(t('exchangeNotExist', language))
+        showToast(t('exchangeNotExist', language), 'warning')
         return
       }
 
@@ -639,7 +790,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       setEditingExchange(null)
     } catch (error) {
       console.error('Failed to save exchange config:', error)
-      alert(t('saveConfigFailed', language))
+      showToast(t('saveConfigFailed', language), 'error')
     }
   }
 
@@ -663,12 +814,251 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       setShowSignalSourceModal(false)
     } catch (error) {
       console.error('Failed to save signal source:', error)
-      alert(t('saveSignalSourceFailed', language))
+      showToast(t('saveSignalSourceFailed', language), 'error')
     }
   }
 
+  // 创建交易员账号
+  const handleCreateTraderAccount = async (traderId: string, options: {
+    generate_random_email: boolean
+    generate_random_password: boolean
+    email?: string
+    password?: string
+  }) => {
+    try {
+      const result = await api.createTraderAccount(traderId, options)
+      // 保存账号信息到state和localStorage（包含密码，可以随时查看）
+      const newAccounts = {
+        ...traderAccounts,
+        [traderId]: {
+          email: result.email,
+          password: result.password,
+        }
+      }
+      setTraderAccounts(newAccounts)
+      saveTraderAccountsToStorage(newAccounts)
+      // 更新账号状态
+      setTraderHasAccount(prev => ({
+        ...prev,
+        [traderId]: true,
+      }))
+      // 显示账号信息弹窗
+      setTraderAccountInfo({
+        traderId,
+        email: result.email,
+        password: result.password,
+      })
+      setShowTraderAccountInfoModal(true)
+      setShowCreateTraderAccountModal(false)
+      setCreatingAccountForTrader(null)
+    } catch (error: any) {
+      console.error('Failed to create trader account:', error)
+      showToast(error.message || '创建交易员账号失败', 'error')
+    }
+  }
+
+
+  // 创建分类
+  const handleCreateCategory = async (name: string, description?: string) => {
+    try {
+      await api.createCategory(name, description)
+      // 重新加载分类列表
+      const categoriesList = await api.getCategories()
+      setCategories(categoriesList)
+      setShowCreateCategoryModal(false)
+      showToast('分类创建成功！', 'success')
+    } catch (error: any) {
+      console.error('Failed to create category:', error)
+      showToast('创建分类失败: ' + (error.message || '未知错误'), 'error')
+    }
+  }
+
+  // 设置交易员分类（从分类详情模态框调用）
+  const handleSetTraderCategory = async (traderId: string, category: string) => {
+    try {
+      console.log('[handleSetTraderCategory] Starting update:', { traderId, category })
+      
+      const response = await api.setTraderCategory(traderId, category)
+      console.log('[handleSetTraderCategory] API response:', response)
+
+      // 先本地乐观更新，立即反映到UI
+      await mutateTraders((current) => {
+        if (!current) return current
+        return current.map(t =>
+          t.trader_id === traderId ? { ...t, category } as any : t
+        )
+      }, { revalidate: false })
+
+      // 再触发一次真实拉取，确保与后端一致
+      console.log('[handleSetTraderCategory] Revalidating traders from server...')
+      await mutateTraders()
+      
+      // 再等待一下确保SWR缓存已更新
+      await new Promise(resolve => setTimeout(resolve, 300))
+      
+      const categoriesList = await api.getCategories()
+      setCategories(categoriesList)
+
+      // 强制刷新CategoryDetailModal
+      setForceRefresh(prev => prev + 1)
+
+      console.log('[handleSetTraderCategory] Update complete')
+
+      // 不在这里显示toast，由调用者决定是否显示
+      return response
+    } catch (error: any) {
+      console.error('[handleSetTraderCategory] Error:', error)
+      const errorMessage = error.message || '未知错误'
+      showToast('设置交易员分类失败: ' + errorMessage, 'error')
+      throw error
+    }
+  }
+
+  // 从分类中移除交易员（设置为空分类）
+  const handleRemoveTraderFromCategory = async (traderId: string) => {
+    try {
+      await api.setTraderCategory(traderId, '')
+      // 乐观更新本地缓存
+      await mutateTraders((current) => {
+        if (!current) return current
+        return current.map(t =>
+          t.trader_id === traderId ? { ...t, category: '' } as any : t
+        )
+      }, { revalidate: false })
+      // 后台校准
+      mutateTraders()
+      showToast('交易员已从分类中移除！', 'success')
+    } catch (error: any) {
+      console.error('Failed to remove trader from category:', error)
+      showToast('移除交易员失败: ' + (error.message || '未知错误'), 'error')
+    }
+  }
+
+  // 加载分类账号列表
+  const loadCategoryAccounts = async () => {
+    try {
+      const accountsList = await api.getCategoryAccounts()
+      setCategoryAccounts(accountsList)
+    } catch (error: any) {
+      console.error('Failed to load category accounts:', error)
+    }
+  }
+
+  // 加载小组组长列表
+  const loadGroupLeaders = async () => {
+    try {
+      const groupLeadersList = await api.getGroupLeaders()
+      setGroupLeaders(groupLeadersList)
+    } catch (error: any) {
+      console.error('Failed to load group leaders:', error)
+    }
+  }
+
+  // 创建分类账号
+  const handleCreateCategoryAccount = async (options: {
+    generate_random_email: boolean
+    generate_random_password: boolean
+    email?: string
+    password?: string
+    category: string
+    role: 'group_leader'
+  }) => {
+    try {
+      const result = await api.createGroupLeaderForCategory({
+        generate_random_email: options.generate_random_email,
+        generate_random_password: options.generate_random_password,
+        email: options.email,
+        password: options.password,
+        category: options.category,
+      })
+
+      if (result && typeof result === 'object' && 'email' in result) {
+        // 保存密码到本地存储
+        if (result.password && result.user_id) {
+          const newAccounts = {
+            ...categoryAccountPasswords,
+            [result.user_id]: {
+              email: result.email,
+              password: result.password,
+            }
+          }
+          setCategoryAccountPasswords(newAccounts)
+          saveCategoryAccountsToStorage(newAccounts)
+        }
+
+        showToast(`小组组长账号创建成功！账号: ${result.email}`, 'success')
+      }
+      setShowCreateCategoryAccountModal(false)
+      setSelectedCategoryForAccount(null)
+      // 刷新账号列表
+      await loadCategoryAccounts()
+      await loadGroupLeaders()
+    } catch (error: any) {
+      console.error('Failed to create category account:', error)
+      showToast(error.message || '创建账号失败', 'error')
+    }
+  }
+
+  // 查看账号信息
+  const handleViewAccountInfo = async (accountId: string) => {
+    try {
+      const accountInfo = await api.getCategoryAccountInfo(accountId)
+      setSelectedAccountInfo(accountInfo)
+      setShowCategoryAccountPage(true)
+    } catch (error: any) {
+      console.error('Failed to load account info:', error)
+      showToast('获取账号信息失败: ' + (error.message || '未知错误'), 'error')
+    }
+  }
+
+  // 按分类分组交易员
+  const groupTradersByCategory = () => {
+    if (!traders) return {}
+    const grouped: Record<string, typeof traders> = {}
+    const uncategorized: typeof traders = []
+
+    traders.forEach((trader) => {
+      const category = trader.category || ''
+      if (category) {
+        if (!grouped[category]) {
+          grouped[category] = []
+        }
+        grouped[category].push(trader)
+      } else {
+        uncategorized.push(trader)
+      }
+    })
+
+    if (uncategorized.length > 0) {
+      grouped['未分类'] = uncategorized
+    }
+
+    return grouped
+  }
+
+  // 获取分类下的小组组长
+  const getCategoryGroupLeaders = (categoryName: string) => {
+    if (!Array.isArray(groupLeaders)) {
+      return []
+    }
+    return groupLeaders.filter((leader) => leader.categories.includes(categoryName))
+  }
+
+  // 检查分类是否已有管理员账号
+  const hasCategoryAdminAccount = (categoryName: string) => {
+    if (!Array.isArray(groupLeaders)) {
+      return false
+    }
+    return groupLeaders.some((leader) => leader.categories.includes(categoryName))
+  }
+
+
+
   return (
     <div className="space-y-4 md:space-y-6 animate-fade-in">
+      {/* Toast提示 */}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
+
       {/* Header */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 md:gap-0">
         <div className="flex items-center gap-3 md:gap-4">
@@ -704,65 +1094,88 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         </div>
 
         <div className="flex gap-2 md:gap-3 w-full md:w-auto overflow-hidden flex-wrap md:flex-nowrap">
-          <button
-            onClick={handleAddModel}
-            className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 md:gap-2 whitespace-nowrap"
-            style={{
-              background: '#2B3139',
-              color: '#EAECEF',
-              border: '1px solid #474D57',
-            }}
-          >
-            <Plus className="w-3 h-3 md:w-4 md:h-4" />
-            {t('aiModels', language)}
-          </button>
+          {canManageConfig && (
+            <>
+              <button
+                onClick={handleAddModel}
+                className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 md:gap-2 whitespace-nowrap"
+                style={{
+                  background: '#2B3139',
+                  color: '#EAECEF',
+                  border: '1px solid #474D57',
+                }}
+              >
+                <Plus className="w-3 h-3 md:w-4 md:h-4" />
+                {t('aiModels', language)}
+              </button>
 
-          <button
-            onClick={handleAddExchange}
-            className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 md:gap-2 whitespace-nowrap"
-            style={{
-              background: '#2B3139',
-              color: '#EAECEF',
-              border: '1px solid #474D57',
-            }}
-          >
-            <Plus className="w-3 h-3 md:w-4 md:h-4" />
-            {t('exchanges', language)}
-          </button>
+              <button
+                onClick={handleAddExchange}
+                className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 md:gap-2 whitespace-nowrap"
+                style={{
+                  background: '#2B3139',
+                  color: '#EAECEF',
+                  border: '1px solid #474D57',
+                }}
+              >
+                <Plus className="w-3 h-3 md:w-4 md:h-4" />
+                {t('exchanges', language)}
+              </button>
 
-          <button
-            onClick={() => setShowSignalSourceModal(true)}
-            className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 md:gap-2 whitespace-nowrap"
-            style={{
-              background: '#2B3139',
-              color: '#EAECEF',
-              border: '1px solid #474D57',
-            }}
-          >
-            <Radio className="w-3 h-3 md:w-4 md:h-4" />
-            {t('signalSource', language)}
-          </button>
+              <button
+                onClick={() => setShowSignalSourceModal(true)}
+                className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 md:gap-2 whitespace-nowrap"
+                style={{
+                  background: '#2B3139',
+                  color: '#EAECEF',
+                  border: '1px solid #474D57',
+                }}
+              >
+                <Radio className="w-3 h-3 md:w-4 md:h-4" />
+                {t('signalSource', language)}
+              </button>
+            </>
+          )}
 
-          <button
-            onClick={() => setShowCreateModal(true)}
-            disabled={
-              configuredModels.length === 0 || configuredExchanges.length === 0
-            }
-            className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 md:gap-2 whitespace-nowrap"
-            style={{
-              background:
-                configuredModels.length > 0 && configuredExchanges.length > 0
-                  ? '#F0B90B'
-                  : '#2B3139',
-              color:
-                configuredModels.length > 0 && configuredExchanges.length > 0
-                  ? '#000'
-                  : '#848E9C',
-            }}
-          >
-            <Plus className="w-4 h-4" />
-            {t('createTrader', language)}
-          </button>
+          {canCreate && (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              disabled={
+                configuredModels.length === 0 || configuredExchanges.length === 0
+              }
+              className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 md:gap-2 whitespace-nowrap"
+              style={{
+                background:
+                  configuredModels.length > 0 && configuredExchanges.length > 0
+                    ? '#F0B90B'
+                    : '#2B3139',
+                color:
+                  configuredModels.length > 0 && configuredExchanges.length > 0
+                    ? '#000'
+                    : '#848E9C',
+              }}
+            >
+              <Plus className="w-4 h-4" />
+              {t('createTrader', language)}
+            </button>
+          )}
+
+          {canManageCategories && (
+            <button
+              onClick={() => setShowCreateCategoryModal(true)}
+              className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 md:gap-2 whitespace-nowrap"
+              style={{
+                background: '#10B981',
+                color: '#EAECEF',
+                border: '1px solid #474D57',
+              }}
+              title="创建分类"
+            >
+              <Plus className="w-3 h-3 md:w-4 md:h-4" />
+              创建分类
+            </button>
+          )}
+
         </div>
       </div>
 
@@ -814,10 +1227,11 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           </div>
         )}
 
-      {/* Configuration Status */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
-        {/* AI Models */}
-        <div className="binance-card p-3 md:p-4">
+      {/* Configuration Status - 只在有权限时显示 */}
+      {canManageConfig && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
+          {/* AI Models */}
+          <div className="binance-card p-3 md:p-4">
           <h3
             className="text-base md:text-lg font-semibold mb-3 flex items-center gap-2"
             style={{ color: '#EAECEF' }}
@@ -963,6 +1377,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           </div>
         </div>
       </div>
+      )}
 
       {/* Traders List */}
       <div className="binance-card p-4 md:p-6">
@@ -980,8 +1395,25 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         </div>
 
         {traders && traders.length > 0 ? (
-          <div className="space-y-3 md:space-y-4">
-            {traders.map((trader) => (
+          <div className="space-y-4 md:space-y-5">
+            {(() => {
+              const grouped = groupTradersByCategory()
+              return Object.entries(grouped).map(([categoryName, categoryTraders]) => (
+                <div key={categoryName} className="space-y-2 md:space-y-3">
+                  {/* 分类标题 */}
+                  <div className="flex items-center gap-2">
+                    <BookOpen className="w-4 h-4 md:w-5 md:h-5" style={{ color: '#10B981' }} />
+                    <h3 className="text-sm md:text-base font-semibold" style={{ color: '#10B981' }}>
+                      {categoryName}
+                    </h3>
+                    <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10B981' }}>
+                      {categoryTraders.length}
+                    </span>
+                  </div>
+                  
+                  {/* 该分类下的交易员 */}
+                  <div className="space-y-2 md:space-y-3">
+                    {categoryTraders.map((trader) => (
               <div
                 key={trader.trader_id}
                 className="flex flex-col md:flex-row md:items-center justify-between p-3 md:p-4 rounded transition-all hover:translate-y-[-1px] gap-3 md:gap-4"
@@ -1066,59 +1498,108 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                       {t('view', language)}
                     </button>
 
-                    <button
-                      onClick={() => handleEditTrader(trader.trader_id)}
-                      disabled={trader.is_running}
-                      className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-                      style={{
-                        background: trader.is_running
-                          ? 'rgba(132, 142, 156, 0.1)'
-                          : 'rgba(255, 193, 7, 0.1)',
-                        color: trader.is_running ? '#848E9C' : '#FFC107',
-                      }}
-                    >
-                      ✏️ {t('edit', language)}
-                    </button>
+                    {canEdit && (
+                      <button
+                        onClick={() => handleEditTrader(trader.trader_id)}
+                        disabled={trader.is_running}
+                        className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                        style={{
+                          background: trader.is_running
+                            ? 'rgba(132, 142, 156, 0.1)'
+                            : 'rgba(255, 193, 7, 0.1)',
+                          color: trader.is_running ? '#848E9C' : '#FFC107',
+                        }}
+                      >
+                        ✏️ {t('edit', language)}
+                      </button>
+                    )}
 
-                    <button
-                      onClick={() =>
-                        handleToggleTrader(
-                          trader.trader_id,
-                          trader.is_running || false
-                        )
-                      }
-                      className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 whitespace-nowrap"
-                      style={
-                        trader.is_running
-                          ? {
-                              background: 'rgba(246, 70, 93, 0.1)',
-                              color: '#F6465D',
-                            }
-                          : {
-                              background: 'rgba(14, 203, 129, 0.1)',
-                              color: '#0ECB81',
-                            }
-                      }
-                    >
-                      {trader.is_running
-                        ? t('stop', language)
-                        : t('start', language)}
-                    </button>
+                    {canEdit && (
+                      <button
+                        onClick={() =>
+                          handleToggleTrader(
+                            trader.trader_id,
+                            trader.is_running || false
+                          )
+                        }
+                        className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 whitespace-nowrap"
+                        style={
+                          trader.is_running
+                            ? {
+                                background: 'rgba(246, 70, 93, 0.1)',
+                                color: '#F6465D',
+                              }
+                            : {
+                                background: 'rgba(14, 203, 129, 0.1)',
+                                color: '#0ECB81',
+                              }
+                        }
+                      >
+                        {trader.is_running
+                          ? t('stop', language)
+                          : t('start', language)}
+                      </button>
+                    )}
 
-                    <button
-                      onClick={() => handleDeleteTrader(trader.trader_id)}
-                      className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105"
-                      style={{
-                        background: 'rgba(246, 70, 93, 0.1)',
-                        color: '#F6465D',
-                      }}
-                    >
-                      <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
-                    </button>
+                    {canDelete && (
+                      <button
+                        onClick={() => handleDeleteTrader(trader.trader_id)}
+                        className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105"
+                        style={{
+                          background: 'rgba(246, 70, 93, 0.1)',
+                          color: '#F6465D',
+                        }}
+                      >
+                        <Trash2 className="w-3 h-3 md:w-4 md:h-4" />
+                      </button>
+                    )}
+
+                    {canCreateAccount && (
+                      <button
+                        onClick={async () => {
+                          const traderId = trader.trader_id
+                          // 先检查交易员是否有账号
+                          try {
+                            const accountResult = await api.getTraderAccount(traderId)
+                            if (accountResult.account) {
+                              // 有账号，显示账号信息（优先使用localStorage中的密码）
+                              setTraderAccountInfo({
+                                traderId,
+                                email: traderAccounts[traderId]?.email || accountResult.account.email,
+                                password: traderAccounts[traderId]?.password || '',
+                              })
+                              setShowTraderAccountInfoModal(true)
+                            } else {
+                              // 没有账号，显示创建账号弹窗
+                              setCreatingAccountForTrader(traderId)
+                          setShowCreateTraderAccountModal(true)
+                            }
+                          } catch (error) {
+                            // 如果API调用失败，默认显示创建弹窗
+                            setCreatingAccountForTrader(traderId)
+                            setShowCreateTraderAccountModal(true)
+                          }
+                        }}
+                        className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 whitespace-nowrap"
+                        style={{
+                          background: 'rgba(99, 102, 241, 0.1)',
+                          color: '#6366F1',
+                        }}
+                        title={traderHasAccount[trader.trader_id] || traderAccounts[trader.trader_id] ? "查看交易员账号" : "创建交易员账号"}
+                      >
+                        <Users className="w-3 h-3 md:w-4 md:h-4" />
+                        {traderHasAccount[trader.trader_id] || traderAccounts[trader.trader_id] ? '查看' : '创建账号'}
+                      </button>
+                    )}
+
                   </div>
                 </div>
               </div>
             ))}
+                  </div>
+                </div>
+              ))
+            })()}
           </div>
         ) : (
           <div
@@ -1146,6 +1627,255 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           </div>
         )}
       </div>
+
+      {/* Categories List Module */}
+      {canManageCategories && (
+        <div className="binance-card p-4 md:p-6">
+          <div className="flex items-center justify-between mb-4 md:mb-5">
+            <h2
+              className="text-lg md:text-xl font-bold flex items-center gap-2"
+              style={{ color: '#EAECEF' }}
+            >
+              <BookOpen
+                className="w-5 h-5 md:w-6 md:h-6"
+                style={{ color: '#10B981' }}
+              />
+              分类管理
+            </h2>
+            <button
+              onClick={() => setShowCreateCategoryModal(true)}
+              className="px-3 md:px-4 py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 md:gap-2 whitespace-nowrap"
+              style={{
+                background: '#10B981',
+                color: '#EAECEF',
+              }}
+            >
+              <Plus className="w-3 h-3 md:w-4 md:h-4" />
+              创建分类
+            </button>
+          </div>
+
+          {categories.length > 0 ? (
+            <div className="space-y-3 md:space-y-4">
+              {categories.map((category) => {
+                const categoryTraders = traders?.filter((t) => t.category && t.category === category.name) || []
+                const isExpanded = expandedCategories.has(category.name)
+                const stats = {
+                  total: categoryTraders.length,
+                  running: categoryTraders.filter((t) => t.is_running).length,
+                }
+
+                return (
+                  <div
+                    key={`category-${category.id}-${category.name}`}
+                    className="rounded-lg transition-all"
+                    style={{ background: '#0B0E11', border: '1px solid #2B3139' }}
+                  >
+                    {/* 分类头部 */}
+                    <div
+                      className="p-3 md:p-4 cursor-pointer hover:bg-gray-800 transition-colors"
+                      onClick={() => {
+                        const newExpanded = new Set(expandedCategories)
+                        if (isExpanded) {
+                          newExpanded.delete(category.name)
+                        } else {
+                          newExpanded.add(category.name)
+                        }
+                        setExpandedCategories(newExpanded)
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3 flex-1">
+                          <div
+                            className="w-8 h-8 md:w-10 md:h-10 rounded-lg flex items-center justify-center flex-shrink-0"
+                            style={{
+                              background: 'linear-gradient(135deg, #10B981 0%, #34D399 100%)',
+                            }}
+                          >
+                            <BookOpen className="w-4 h-4 md:w-5 md:h-5" style={{ color: '#000' }} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <h3 className="text-base md:text-lg font-bold truncate" style={{ color: '#EAECEF' }}>
+                                {category.name}
+                              </h3>
+                              <span
+                                className="px-2 py-0.5 rounded text-xs font-semibold"
+                                style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#10B981' }}
+                              >
+                                {stats.total} 个交易员
+                              </span>
+                            </div>
+                            {category.description && (
+                              <p className="text-xs md:text-sm truncate" style={{ color: '#848E9C' }}>
+                                {category.description}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-4 mt-2 text-xs" style={{ color: '#848E9C' }}>
+                              <span>运行中: {stats.running}</span>
+                              <span>已停止: {stats.total - stats.running}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation()
+                              setSelectedCategoryForAccount(category)
+
+                              const hasAccount = hasCategoryAdminAccount(category.name)
+
+                              if (hasAccount) {
+                                // 有账号，显示账号信息
+                                try {
+                                  const accountResult = await api.getCategoryAccounts()
+                                  const categoryAccounts = accountResult.filter(acc => acc.category === category.name)
+                                  const adminAccount = categoryAccounts.find(acc => acc.role === 'group_leader')
+                                  if (adminAccount) {
+                                    // 合并本地存储的密码
+                                    const accountWithPassword = {
+                                      ...adminAccount,
+                                      password: categoryAccountPasswords[adminAccount.id]?.password || ''
+                                    }
+                                    setSelectedAccountInfo(accountWithPassword)
+                                    setShowCategoryAccountPage(true)
+                                  }
+                                } catch (error) {
+                                  console.error('Failed to load account info:', error)
+                                  showToast('获取账号信息失败', 'error')
+                                }
+                              } else {
+                                // 没有账号，显示创建账号弹窗
+                                setShowCreateCategoryAccountModal(true)
+                              }
+                            }}
+                            className="px-3 py-1.5 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105"
+                            style={hasCategoryAdminAccount(category.name) ? {
+                              background: 'rgba(16, 185, 129, 0.1)',
+                              color: '#10B981',
+                            } : {
+                              background: 'rgba(99, 102, 241, 0.1)',
+                              color: '#6366F1',
+                            }}
+                          >
+                            {hasCategoryAdminAccount(category.name) ? (
+                              <>
+                                <Eye className="w-3 h-3 mr-1" />
+                                查看账号
+                              </>
+                            ) : (
+                              <>
+                                <User className="w-3 h-3 mr-1" />
+                                创建账号
+                              </>
+                            )}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setSelectedCategoryForDetail(category)
+                              setShowCategoryDetailModal(true)
+                            }}
+                            className="px-3 py-1.5 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105"
+                            style={{
+                              background: 'rgba(99, 102, 241, 0.1)',
+                              color: '#6366F1',
+                            }}
+                          >
+                            管理
+                          </button>
+                          <div
+                            className="w-5 h-5 flex items-center justify-center transition-transform"
+                            style={{
+                              transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                              color: '#848E9C',
+                            }}
+                          >
+                            <ChevronDown className="w-4 h-4" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 展开的交易员列表 */}
+                    {isExpanded && categoryTraders.length > 0 && (
+                      <div className="px-3 md:px-4 pb-3 md:pb-4 pt-2 border-t" style={{ borderColor: '#2B3139' }}>
+                        <div className="space-y-2">
+                          {categoryTraders.map((trader) => (
+                            <div
+                              key={trader.trader_id}
+                              className="flex items-center justify-between p-2 md:p-3 rounded"
+                              style={{ background: '#181A20', border: '1px solid #2B3139' }}
+                            >
+                              <div className="flex items-center gap-2 md:gap-3 flex-1 min-w-0">
+                                <div
+                                  className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                                  style={{
+                                    background: trader.ai_model.includes('deepseek')
+                                      ? '#60a5fa'
+                                      : '#c084fc',
+                                    color: '#fff',
+                                  }}
+                                >
+                                  <Bot className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="font-semibold text-sm truncate" style={{ color: '#EAECEF' }}>
+                                    {trader.trader_name}
+                                  </div>
+                                  <div className="text-xs truncate" style={{ color: '#848E9C' }}>
+                                    {getModelDisplayName(
+                                      trader.ai_model.split('_').pop() || trader.ai_model
+                                    )} • {trader.exchange_id?.toUpperCase()}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <div
+                                  className="px-2 py-1 rounded text-xs font-semibold"
+                                  style={{
+                                    background: trader.is_running
+                                      ? 'rgba(14, 203, 129, 0.1)'
+                                      : 'rgba(132, 142, 156, 0.1)',
+                                    color: trader.is_running ? '#0ECB81' : '#848E9C',
+                                  }}
+                                >
+                                  {trader.is_running ? '运行中' : '已停止'}
+                                </div>
+                                <button
+                                  onClick={() => onTraderSelect?.(trader.trader_id)}
+                                  className="px-2 py-1 rounded text-xs font-semibold transition-all hover:scale-105"
+                                  style={{
+                                    background: 'rgba(99, 102, 241, 0.1)',
+                                    color: '#6366F1',
+                                  }}
+                                >
+                                  查看
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {isExpanded && categoryTraders.length === 0 && (
+                      <div className="px-3 md:px-4 pb-3 md:pb-4 pt-2 border-t text-center py-4" style={{ borderColor: '#2B3139', color: '#848E9C' }}>
+                        <div className="text-sm">该分类下暂无交易员</div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <div className="text-center py-8" style={{ color: '#848E9C' }}>
+              <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-50" />
+              <div className="text-sm">暂无分类，创建第一个分类来组织您的交易员</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Create Trader Modal */}
       {showCreateModal && (
@@ -1214,6 +1944,135 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           onSave={handleSaveSignalSource}
           onClose={() => setShowSignalSourceModal(false)}
           language={language}
+        />
+      )}
+
+      {/* Create Trader Account Modal */}
+      {showCreateTraderAccountModal && creatingAccountForTrader && (
+        <CreateAccountModal
+          traderId={creatingAccountForTrader}
+          onSave={handleCreateTraderAccount}
+          onClose={() => {
+            setShowCreateTraderAccountModal(false)
+            setCreatingAccountForTrader(null)
+          }}
+        />
+      )}
+
+
+      {/* Create Category Modal */}
+      {showCreateCategoryModal && (
+        <CreateCategoryModal
+          onSave={handleCreateCategory}
+          onClose={() => setShowCreateCategoryModal(false)}
+          onShowToast={showToast}
+        />
+      )}
+
+      {/* Category Detail Modal */}
+      {showCategoryDetailModal && selectedCategoryForDetail && (
+        <CategoryDetailModal
+          key={`category-detail-${selectedCategoryForDetail.id}-${forceRefresh}-${traders?.length || 0}`} // 使用forceRefresh和traders长度确保更新
+          category={selectedCategoryForDetail}
+          traders={traders || []}
+          onAddTrader={handleSetTraderCategory}
+          onRemoveTrader={handleRemoveTraderFromCategory}
+          onClose={() => {
+            setShowCategoryDetailModal(false)
+            setSelectedCategoryForDetail(null)
+          }}
+          onShowToast={showToast}
+        />
+      )}
+
+      {/* Create Category Account Modal */}
+      {showCreateCategoryAccountModal && selectedCategoryForAccount && (
+        <CreateCategoryAccountModal
+          category={selectedCategoryForAccount}
+          onSave={handleCreateCategoryAccount}
+          onClose={() => {
+            setShowCreateCategoryAccountModal(false)
+            setSelectedCategoryForAccount(null)
+          }}
+          onShowToast={showToast}
+        />
+      )}
+
+      {/* Category Account List Modal */}
+      {showCategoryAccountListModal && selectedCategoryForAccount && (
+        <CategoryAccountListModal
+          category={selectedCategoryForAccount}
+          groupLeaders={getCategoryGroupLeaders(selectedCategoryForAccount.name)}
+          categoryAccounts={categoryAccounts.filter(acc => acc.category === selectedCategoryForAccount.name)}
+          onViewAccount={handleViewAccountInfo}
+          onClose={() => {
+            setShowCategoryAccountListModal(false)
+            setSelectedCategoryForAccount(null)
+          }}
+        />
+      )}
+
+      {/* Category Account Info Modal */}
+      {showCategoryAccountPage && selectedAccountInfo && (
+        <CategoryAccountInfoModal
+          accountInfo={selectedAccountInfo}
+          onSave={(newPassword) => {
+            // 更新账号信息中的密码
+            setSelectedAccountInfo((prev: any) => prev ? {
+              ...prev,
+              password: newPassword,
+            } : null)
+
+            // 更新本地存储
+            if (selectedAccountInfo?.id) {
+              const newAccounts = {
+                ...categoryAccountPasswords,
+                [selectedAccountInfo.id]: {
+                  email: selectedAccountInfo.email,
+                  password: newPassword,
+                }
+              }
+              setCategoryAccountPasswords(newAccounts)
+              saveCategoryAccountsToStorage(newAccounts)
+            }
+          }}
+          onClose={() => {
+            setShowCategoryAccountPage(false)
+            setSelectedAccountInfo(null)
+          }}
+          onShowToast={showToast}
+        />
+      )}
+
+      {/* Trader Account Info Modal */}
+      {showTraderAccountInfoModal && traderAccountInfo && (
+        <TraderAccountInfoModal
+          email={traderAccountInfo.email}
+          password={traderAccountInfo.password}
+          traderId={traderAccountInfo.traderId}
+          onSave={(newPassword) => {
+            // 更新state和localStorage中的密码
+            const newAccounts = {
+              ...traderAccounts,
+              [traderAccountInfo.traderId]: {
+                email: traderAccountInfo.email,
+                password: newPassword,
+              }
+            }
+            setTraderAccounts(newAccounts)
+            saveTraderAccountsToStorage(newAccounts)
+            // 更新弹窗中的密码
+            setTraderAccountInfo(prev => prev ? {
+              ...prev,
+              password: newPassword,
+            } : null)
+          }}
+          onClose={() => {
+            setShowTraderAccountInfoModal(false)
+            setTraderAccountInfo(null)
+          }}
+          language={language}
+          onShowToast={showToast}
         />
       )}
     </div>
@@ -2559,5 +3418,1660 @@ function ExchangeConfigModal({
         onComplete={handleSecureInputComplete}
       />
     </div>
+  )
+}
+
+// Create Account Modal Component (创建交易员账号模态框)
+function CreateAccountModal({
+  traderId,
+  onSave,
+  onClose,
+}: {
+  traderId: string
+  onSave: (traderId: string, options: {
+    generate_random_email: boolean
+    generate_random_password: boolean
+    email?: string
+    password?: string
+  }) => void
+  onClose: () => void
+}) {
+  const [generateRandomEmail, setGenerateRandomEmail] = useState(true)
+  const [generateRandomPassword, setGenerateRandomPassword] = useState(true)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    
+    // 验证必填字段
+    if (!generateRandomEmail && !email.trim()) {
+      alert('请输入账号（邮箱）')
+      return
+    }
+    if (!generateRandomPassword && !password.trim()) {
+      alert('请输入密码')
+      return
+    }
+
+    setLoading(true)
+    try {
+      await onSave(traderId, {
+        generate_random_email: generateRandomEmail,
+        generate_random_password: generateRandomPassword,
+        email: generateRandomEmail ? undefined : email.trim(),
+        password: generateRandomPassword ? undefined : password.trim(),
+      })
+    } catch (error) {
+      console.error('Failed to create account:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-gray-800 rounded-lg p-6 w-full max-w-md"
+        style={{ background: '#1E2329', border: '1px solid #2B3139' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3
+          className="text-xl font-bold mb-4"
+          style={{ color: '#EAECEF' }}
+        >
+          创建交易员账号
+        </h3>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* 账号生成方式 */}
+          <div>
+            <label className="flex items-center gap-2 mb-2">
+              <input
+                type="checkbox"
+                checked={generateRandomEmail}
+                onChange={(e) => setGenerateRandomEmail(e.target.checked)}
+                className="w-4 h-4"
+              />
+              <span style={{ color: '#EAECEF' }}>随机生成账号</span>
+            </label>
+            {!generateRandomEmail && (
+              <input
+                type="email"
+                placeholder="请输入账号（邮箱）"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-3 py-2 rounded"
+                style={{
+                  background: '#0B0E11',
+                  border: '1px solid #2B3139',
+                  color: '#EAECEF',
+                }}
+                required
+              />
+            )}
+          </div>
+
+          {/* 密码生成方式 */}
+          <div>
+            <label className="flex items-center gap-2 mb-2">
+              <input
+                type="checkbox"
+                checked={generateRandomPassword}
+                onChange={(e) => setGenerateRandomPassword(e.target.checked)}
+                className="w-4 h-4"
+              />
+              <span style={{ color: '#EAECEF' }}>随机生成密码</span>
+            </label>
+            {!generateRandomPassword && (
+              <input
+                type="password"
+                placeholder="请输入密码"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-3 py-2 rounded"
+                style={{
+                  background: '#0B0E11',
+                  border: '1px solid #2B3139',
+                  color: '#EAECEF',
+                }}
+                required
+              />
+            )}
+          </div>
+
+          <div className="flex gap-3 mt-6">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 rounded text-sm font-semibold"
+              style={{ background: '#2B3139', color: '#848E9C' }}
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex-1 px-4 py-2 rounded text-sm font-semibold disabled:opacity-50"
+              style={{ background: '#F0B90B', color: '#000' }}
+            >
+              {loading ? '创建中...' : '创建'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+
+// Category Account Info Modal Component (分类账号信息弹窗)
+function CategoryAccountInfoModal({
+  accountInfo,
+  onSave,
+  onClose,
+  onShowToast,
+}: {
+  accountInfo: any
+  onSave: (newPassword: string) => void
+  onClose: () => void
+  onShowToast?: (message: string, type: 'success' | 'error' | 'warning' | 'info') => void
+}) {
+  const [copiedEmail, setCopiedEmail] = useState(false)
+  const [copiedPassword, setCopiedPassword] = useState(false)
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false)
+
+  const handleCopyEmail = () => {
+    navigator.clipboard.writeText(accountInfo.email).then(() => {
+      setCopiedEmail(true)
+      setTimeout(() => setCopiedEmail(false), 2000)
+    })
+  }
+
+  const handleCopyPassword = () => {
+    if (accountInfo.password) {
+      navigator.clipboard.writeText(accountInfo.password).then(() => {
+        setCopiedPassword(true)
+        setTimeout(() => setCopiedPassword(false), 2000)
+      })
+    }
+  }
+
+  return (
+    <ModernModal
+      isOpen={true}
+      onClose={onClose}
+      title="分类账号信息"
+      size="md"
+    >
+      <div className="space-y-6">
+          {/* 角色 - 最上面 */}
+          <div>
+            <label
+              className="block text-sm font-medium mb-3"
+              style={{ color: '#EAECEF' }}
+            >
+              用户类型
+            </label>
+            <div className="flex-1 relative">
+              <input
+                type="text"
+                value={accountInfo.role === 'group_leader' ? '小组组长' : '交易员账号'}
+                readOnly
+                className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200"
+                style={{
+                  background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                  border: '1px solid rgba(43, 49, 57, 0.6)',
+                  color: '#EAECEF',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+              />
+              <div
+                className="absolute inset-0 rounded-xl pointer-events-none"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.05), rgba(147, 51, 234, 0.05))',
+                  border: '1px solid rgba(59, 130, 246, 0.1)',
+                }}
+              />
+            </div>
+          </div>
+
+          {/* 账号（邮箱）- 中间 */}
+          <div>
+            <label
+              className="block text-sm font-medium mb-3"
+              style={{ color: '#EAECEF' }}
+            >
+              用户名
+            </label>
+            <div className="flex items-center gap-3">
+              <div className="flex-1 relative">
+                <input
+                  type="text"
+                  value={accountInfo.email}
+                  readOnly
+                  className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200"
+                  style={{
+                    background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                    border: '1px solid rgba(43, 49, 57, 0.6)',
+                    color: '#EAECEF',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                  }}
+                />
+                <div
+                  className="absolute inset-0 rounded-xl pointer-events-none"
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.05), rgba(147, 51, 234, 0.05))',
+                    border: '1px solid rgba(59, 130, 246, 0.1)',
+                  }}
+                />
+      </div>
+              <button
+                onClick={handleCopyEmail}
+                className="px-4 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 flex items-center gap-2 whitespace-nowrap"
+                style={{
+                  background: copiedEmail
+                    ? 'linear-gradient(135deg, #10B981 0%, #34D399 100%)'
+                    : 'linear-gradient(135deg, #2B3139 0%, #374151 100%)',
+                  color: copiedEmail ? '#fff' : '#EAECEF',
+                  border: '1px solid rgba(132, 142, 156, 0.2)',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+              >
+                {copiedEmail ? (
+                  <>
+                    <Check className="w-4 h-4" />
+                    已复制
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" />
+                    复制
+                  </>
+                )}
+              </button>
+    </div>
+          </div>
+
+          {/* 密码 */}
+          <div>
+            <label
+              className="block text-sm font-medium mb-3"
+              style={{ color: '#EAECEF' }}
+            >
+              密码
+            </label>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex-1 relative">
+                <input
+                  type="text"
+                  value={accountInfo.password || ''}
+                  readOnly
+                  className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200"
+                  style={{
+                    background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                    border: '1px solid rgba(43, 49, 57, 0.6)',
+                    color: '#EAECEF',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                  }}
+                  placeholder="未设置密码"
+                />
+                <div
+                  className="absolute inset-0 rounded-xl pointer-events-none"
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.05), rgba(147, 51, 234, 0.05))',
+                    border: '1px solid rgba(59, 130, 246, 0.1)',
+                  }}
+                />
+              </div>
+              <button
+                onClick={handleCopyPassword}
+                className="px-4 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap"
+                style={{
+                  background: copiedPassword
+                    ? 'linear-gradient(135deg, #10B981 0%, #34D399 100%)'
+                    : !accountInfo.password
+                      ? 'linear-gradient(135deg, #4B5563 0%, #6B7280 100%)'
+                      : 'linear-gradient(135deg, #2B3139 0%, #374151 100%)',
+                  color: copiedPassword ? '#fff' : '#EAECEF',
+                  border: '1px solid rgba(132, 142, 156, 0.2)',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+                disabled={!accountInfo.password}
+              >
+                {copiedPassword ? (
+                  <>
+                    <Check className="w-4 h-4" />
+                    已复制
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" />
+                    复制
+                  </>
+                )}
+              </button>
+            </div>
+            <button
+              onClick={() => setShowChangePasswordModal(true)}
+              className="w-full px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 flex items-center justify-center gap-2"
+              style={{
+                background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)',
+                color: '#fff',
+                boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)',
+              }}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+              </svg>
+              {accountInfo.password ? '修改密码' : '设置密码'}
+            </button>
+          </div>
+
+          {/* 底部操作按钮 */}
+          <div className="flex gap-4 mt-8 pt-6 border-t" style={{ borderColor: 'rgba(43, 49, 57, 0.6)' }}>
+            <button
+              onClick={onClose}
+              className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105"
+              style={{
+                background: 'linear-gradient(135deg, #F0B90B 0%, #F59E0B 100%)',
+                color: '#000',
+                boxShadow: '0 4px 12px rgba(240, 185, 11, 0.3)',
+              }}
+            >
+              关闭
+            </button>
+          </div>
+
+        {/* 修改密码弹窗 */}
+        {showChangePasswordModal && (
+          <ChangePasswordModal
+            accountId={accountInfo.id}
+            onSave={(newPassword) => {
+              onSave(newPassword)
+              setShowChangePasswordModal(false)
+            }}
+            onClose={() => setShowChangePasswordModal(false)}
+            onShowToast={onShowToast}
+          />
+        )}
+      </div>
+    </ModernModal>
+  )
+}
+
+
+// Trader Account Info Modal Component (交易员账号信息弹窗)
+function TraderAccountInfoModal({
+  email,
+  password,
+  traderId,
+  onSave,
+  onClose,
+  onShowToast,
+}: {
+  email: string
+  password: string
+  traderId: string
+  onSave: (newPassword: string) => void
+  onClose: () => void
+  language: Language
+  onShowToast?: (message: string, type: 'success' | 'error' | 'warning' | 'info') => void
+}) {
+  const [copiedEmail, setCopiedEmail] = useState(false)
+  const [copiedPassword, setCopiedPassword] = useState(false)
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false)
+
+  const handleCopyEmail = () => {
+    navigator.clipboard.writeText(email).then(() => {
+      setCopiedEmail(true)
+      setTimeout(() => setCopiedEmail(false), 2000)
+    })
+  }
+
+  const handleCopyPassword = () => {
+    if (password) {
+      navigator.clipboard.writeText(password).then(() => {
+        setCopiedPassword(true)
+        setTimeout(() => setCopiedPassword(false), 2000)
+      })
+    }
+  }
+
+  return (
+    <ModernModal
+      isOpen={true}
+      onClose={onClose}
+      title="交易员账号信息"
+      size="md"
+    >
+      <div className="space-y-6">
+          {/* 账号（邮箱） */}
+          <div>
+            <label
+              className="block text-sm font-medium mb-3"
+              style={{ color: '#EAECEF' }}
+            >
+              账号（邮箱）
+            </label>
+            <div className="flex items-center gap-3">
+              <div className="flex-1 relative">
+                <input
+                  type="text"
+                  value={email}
+                  readOnly
+                  className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200"
+                  style={{
+                    background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                    border: '1px solid rgba(43, 49, 57, 0.6)',
+                    color: '#EAECEF',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                  }}
+                />
+                <div
+                  className="absolute inset-0 rounded-xl pointer-events-none"
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.05), rgba(147, 51, 234, 0.05))',
+                    border: '1px solid rgba(59, 130, 246, 0.1)',
+                  }}
+                />
+      </div>
+              <button
+                onClick={handleCopyEmail}
+                className="px-4 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 flex items-center gap-2 whitespace-nowrap"
+                style={{
+                  background: copiedEmail
+                    ? 'linear-gradient(135deg, #10B981 0%, #34D399 100%)'
+                    : 'linear-gradient(135deg, #2B3139 0%, #374151 100%)',
+                  color: copiedEmail ? '#fff' : '#EAECEF',
+                  border: '1px solid rgba(132, 142, 156, 0.2)',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+              >
+                {copiedEmail ? (
+                  <>
+                    <Check className="w-4 h-4" />
+                    已复制
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" />
+                    复制
+                  </>
+                )}
+              </button>
+    </div>
+          </div>
+
+          {/* 密码 */}
+          <div>
+            <label
+              className="block text-sm font-medium mb-3"
+              style={{ color: '#EAECEF' }}
+            >
+              密码
+            </label>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex-1 relative">
+                <input
+                  type="text"
+                  value={password || ''}
+                  readOnly
+                  className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200"
+                  style={{
+                    background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                    border: '1px solid rgba(43, 49, 57, 0.6)',
+                    color: '#EAECEF',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                  }}
+                  placeholder="未设置密码"
+                />
+                <div
+                  className="absolute inset-0 rounded-xl pointer-events-none"
+                  style={{
+                    background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.05), rgba(147, 51, 234, 0.05))',
+                    border: '1px solid rgba(59, 130, 246, 0.1)',
+                  }}
+                />
+              </div>
+              <button
+                onClick={handleCopyPassword}
+                className="px-4 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap"
+                style={{
+                  background: copiedPassword
+                    ? 'linear-gradient(135deg, #10B981 0%, #34D399 100%)'
+                    : !password
+                      ? 'linear-gradient(135deg, #4B5563 0%, #6B7280 100%)'
+                      : 'linear-gradient(135deg, #2B3139 0%, #374151 100%)',
+                  color: copiedPassword ? '#fff' : '#EAECEF',
+                  border: '1px solid rgba(132, 142, 156, 0.2)',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+                disabled={!password}
+              >
+                {copiedPassword ? (
+                  <>
+                    <Check className="w-4 h-4" />
+                    已复制
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" />
+                    复制
+                  </>
+                )}
+              </button>
+            </div>
+            <button
+              onClick={() => setShowChangePasswordModal(true)}
+              className="w-full px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 flex items-center justify-center gap-2"
+              style={{
+                background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)',
+                color: '#fff',
+                boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)',
+              }}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+              </svg>
+              {password ? '修改密码' : '设置密码'}
+            </button>
+          </div>
+
+          {/* 底部操作按钮 */}
+          <div className="flex gap-4 mt-8 pt-6 border-t" style={{ borderColor: 'rgba(43, 49, 57, 0.6)' }}>
+            <button
+              onClick={onClose}
+              className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105"
+              style={{
+                background: 'linear-gradient(135deg, #F0B90B 0%, #F59E0B 100%)',
+                color: '#000',
+                boxShadow: '0 4px 12px rgba(240, 185, 11, 0.3)',
+              }}
+            >
+              关闭
+            </button>
+          </div>
+
+        {/* 修改密码弹窗 */}
+        {showChangePasswordModal && (
+          <ChangePasswordModal
+            traderId={traderId}
+            onSave={(newPassword) => {
+              onSave(newPassword)
+              setShowChangePasswordModal(false)
+            }}
+            onClose={() => setShowChangePasswordModal(false)}
+            onShowToast={onShowToast}
+          />
+        )}
+      </div>
+    </ModernModal>
+  )
+}
+
+// Change Password Modal Component (修改密码弹窗)
+function ChangePasswordModal({
+  traderId,
+  accountId,
+  onSave,
+  onClose,
+  onShowToast,
+}: {
+  traderId?: string
+  accountId?: string
+  onSave: (newPassword: string) => void
+  onClose: () => void
+  onShowToast?: (message: string, type: 'success' | 'error' | 'warning' | 'info') => void
+}) {
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (!newPassword.trim()) {
+      if (onShowToast) {
+        onShowToast('密码不能为空', 'warning')
+      } else {
+        alert('密码不能为空')
+      }
+      return
+    }
+
+    if (newPassword !== confirmPassword) {
+      if (onShowToast) {
+        onShowToast('两次输入的密码不一致', 'warning')
+      } else {
+        alert('两次输入的密码不一致')
+      }
+      return
+    }
+
+    setSaving(true)
+    try {
+      if (accountId) {
+        // 分类账号密码更新
+        await api.updateCategoryAccountPassword(accountId, newPassword.trim())
+        onSave(newPassword.trim())
+      } else if (traderId) {
+        // 交易员账号密码更新
+        const result = await api.updateTraderAccountPassword(traderId, newPassword.trim())
+        onSave(result.password)
+      }
+      if (onShowToast) {
+        onShowToast('密码修改成功！', 'success')
+      }
+    } catch (error: any) {
+      console.error('Failed to update password:', error)
+      if (onShowToast) {
+        onShowToast('密码修改失败: ' + (error.message || '未知错误'), 'error')
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <ModernModal
+      isOpen={true}
+      onClose={onClose}
+      title="修改密码"
+      size="sm"
+    >
+      <form onSubmit={handleSubmit} className="space-y-6">
+          {/* 新密码 */}
+          <div>
+            <label
+              className="block text-sm font-medium mb-3"
+              style={{ color: '#EAECEF' }}
+            >
+              新密码
+            </label>
+            <div className="relative">
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                style={{
+                  background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                  border: '1px solid rgba(43, 49, 57, 0.6)',
+                  color: '#EAECEF',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+                placeholder="请输入新密码"
+                required
+              />
+              <div
+                className="absolute inset-0 rounded-xl pointer-events-none opacity-0 transition-opacity duration-200"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(147, 51, 234, 0.1))',
+                  border: '1px solid rgba(59, 130, 246, 0.3)',
+                }}
+              />
+            </div>
+          </div>
+
+          {/* 确认密码 */}
+          <div>
+            <label
+              className="block text-sm font-medium mb-3"
+              style={{ color: '#EAECEF' }}
+            >
+              确认密码
+            </label>
+            <div className="relative">
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                style={{
+                  background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                  border: '1px solid rgba(43, 49, 57, 0.6)',
+                  color: '#EAECEF',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                  borderColor: newPassword && confirmPassword && newPassword !== confirmPassword
+                    ? 'rgba(246, 70, 93, 0.6)'
+                    : 'rgba(43, 49, 57, 0.6)',
+                }}
+                placeholder="请再次输入新密码"
+                required
+              />
+              <div
+                className="absolute inset-0 rounded-xl pointer-events-none opacity-0 transition-opacity duration-200"
+                style={{
+                  background: newPassword && confirmPassword && newPassword !== confirmPassword
+                    ? 'linear-gradient(135deg, rgba(246, 70, 93, 0.1), rgba(246, 70, 93, 0.05))'
+                    : 'linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(147, 51, 234, 0.1))',
+                  border: newPassword && confirmPassword && newPassword !== confirmPassword
+                    ? '1px solid rgba(246, 70, 93, 0.3)'
+                    : '1px solid rgba(59, 130, 246, 0.3)',
+                }}
+              />
+            </div>
+            {newPassword && confirmPassword && newPassword !== confirmPassword && (
+              <p className="text-xs mt-2" style={{ color: '#F6465D' }}>
+                两次输入的密码不一致
+              </p>
+            )}
+          </div>
+
+          {/* 底部操作按钮 */}
+          <div className="flex gap-4 mt-8 pt-6 border-t" style={{ borderColor: 'rgba(43, 49, 57, 0.6)' }}>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105"
+              style={{
+                background: 'linear-gradient(135deg, #2B3139 0%, #374151 100%)',
+                color: '#848E9C',
+                border: '1px solid rgba(132, 142, 156, 0.2)',
+              }}
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !newPassword.trim() || newPassword !== confirmPassword}
+              className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              style={{
+                background: saving || !newPassword.trim() || newPassword !== confirmPassword
+                  ? 'linear-gradient(135deg, #4B5563 0%, #6B7280 100%)'
+                  : 'linear-gradient(135deg, #F0B90B 0%, #F59E0B 100%)',
+                color: '#000',
+                boxShadow: saving || !newPassword.trim() || newPassword !== confirmPassword
+                  ? 'none'
+                  : '0 4px 12px rgba(240, 185, 11, 0.3)',
+              }}
+            >
+              {saving ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+                  保存中...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  确认修改
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+    </ModernModal>
+  )
+}
+
+// 创建分类模态框
+function CreateCategoryModal({
+  onSave,
+  onClose,
+  onShowToast,
+}: {
+  onSave: (name: string, description?: string) => void
+  onClose: () => void
+  onShowToast?: (message: string, type?: 'success' | 'error' | 'warning' | 'info') => void
+}) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name.trim()) {
+      onShowToast?.('请输入分类名称', 'warning')
+      return
+    }
+    setSaving(true)
+    try {
+      await onSave(name.trim(), description.trim() || undefined)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <ModernModal
+      isOpen={true}
+      onClose={onClose}
+      title="创建分类"
+      size="md"
+    >
+      <form onSubmit={handleSubmit}>
+        <div className="space-y-6">
+          <div>
+            <label className="block text-sm font-medium mb-3" style={{ color: '#EAECEF' }}>
+              分类名称 <span style={{ color: '#F6465D' }}>*</span>
+            </label>
+            <div className="relative">
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                style={{
+                  background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                  border: '1px solid rgba(43, 49, 57, 0.6)',
+                  color: '#EAECEF',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+                placeholder="请输入分类名称"
+                required
+              />
+              <div
+                className="absolute inset-0 rounded-xl pointer-events-none opacity-0 transition-opacity duration-200 peer-focus:opacity-100"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(147, 51, 234, 0.1))',
+                  border: '1px solid rgba(59, 130, 246, 0.3)',
+                }}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-3" style={{ color: '#EAECEF' }}>
+              分类描述（可选）
+            </label>
+            <div className="relative">
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                style={{
+                  background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                  border: '1px solid rgba(43, 49, 57, 0.6)',
+                  color: '#EAECEF',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+                placeholder="请输入分类描述"
+                rows={4}
+              />
+              <div
+                className="absolute inset-0 rounded-xl pointer-events-none opacity-0 transition-opacity duration-200"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(147, 51, 234, 0.1))',
+                  border: '1px solid rgba(59, 130, 246, 0.3)',
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-4 mt-8 pt-6 border-t" style={{ borderColor: 'rgba(43, 49, 57, 0.6)' }}>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105"
+            style={{
+              background: 'linear-gradient(135deg, #2B3139 0%, #374151 100%)',
+              color: '#848E9C',
+              border: '1px solid rgba(132, 142, 156, 0.2)',
+            }}
+          >
+            取消
+          </button>
+          <button
+            type="submit"
+            disabled={saving || !name.trim()}
+            className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            style={{
+              background: saving || !name.trim()
+                ? 'linear-gradient(135deg, #4B5563 0%, #6B7280 100%)'
+                : 'linear-gradient(135deg, #10B981 0%, #34D399 100%)',
+              color: '#EAECEF',
+              boxShadow: saving || !name.trim()
+                ? 'none'
+                : '0 4px 12px rgba(16, 185, 129, 0.3)',
+            }}
+          >
+            {saving ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                创建中...
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                创建分类
+              </>
+            )}
+          </button>
+        </div>
+      </form>
+    </ModernModal>
+  )
+}
+
+// 分类详情模态框
+function CategoryDetailModal({
+  category,
+  traders,
+  onAddTrader,
+  onRemoveTrader,
+  onClose,
+  onShowToast,
+}: {
+  category: any
+  traders: Array<{ trader_id: string; trader_name: string; category?: string; owner_user_id?: string; ai_model?: string; exchange_id?: string }>
+  onAddTrader: (traderId: string, category: string) => Promise<any>
+  onRemoveTrader: (traderId: string) => void
+  onClose: () => void
+  onShowToast?: (message: string, type?: 'success' | 'error' | 'warning' | 'info') => void
+}) {
+  const { user } = useAuth()
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [selectedTraderToAdd, setSelectedTraderToAdd] = useState<string>('')
+  const [saving, setSaving] = useState(false)
+  
+  // 当traders prop更新时，强制重新渲染
+  useEffect(() => {
+    console.log('[CategoryDetailModal] Traders prop updated:', {
+      total: traders.length,
+      category: category.name,
+      categoryTraders: traders.filter(t => t.category === category.name).length
+    })
+    // 强制更新组件状态
+    setSelectedTraderToAdd('')
+  }, [traders, category.name])
+
+  // 获取该分类下的交易员
+  const categoryTraders = useMemo(() => {
+    return traders.filter((t) => t.category === category.name)
+  }, [traders, category.name])
+
+  // 获取可以添加的交易员（不属于任何分类的，且属于当前用户的）
+  const availableTraders = useMemo(() => {
+    const filtered = traders.filter((t) => {
+      // 不属于任何分类（traderCategory为空字符串、null或undefined）
+      const traderCategory = t.category
+      const hasNoCategory = !traderCategory || traderCategory === '' || traderCategory === null || traderCategory === undefined
+      // 属于当前用户（如果后端返回了owner_user_id，则检查；如果没有返回，则允许，因为可能是旧数据）
+      const belongsToUser = t.owner_user_id === undefined || (user && t.owner_user_id === user.id)
+      // 不能是当前分类下的交易员
+      const notInCurrentCategory = traderCategory !== category.name
+      return hasNoCategory && belongsToUser && notInCurrentCategory
+    })
+
+    console.log('[CategoryDetailModal] Available traders updated:', {
+      total: traders.length,
+      available: filtered.length,
+      category: category.name,
+      traders: filtered.map(t => ({ id: t.trader_id, name: t.trader_name, category: t.category }))
+    })
+
+    return filtered
+  }, [traders, user?.id, category.name]) // 添加user?.id作为依赖
+
+  const handleAddTrader = async (traderId?: string) => {
+    const traderIdToAdd = traderId || selectedTraderToAdd
+    if (!traderIdToAdd) {
+      onShowToast?.('请选择要添加的交易员', 'warning')
+      return
+    }
+
+    // 检查交易员是否已经属于其他分类
+    const trader = traders.find((t) => t.trader_id === traderIdToAdd)
+    if (trader?.category && trader.category !== '' && trader.category !== category.name) {
+      onShowToast?.('该交易员已属于其他分类，无法添加', 'error')
+      return
+    }
+
+    setSaving(true)
+    setSelectedTraderToAdd(traderIdToAdd)
+    try {
+      console.log('[CategoryDetailModal] Adding trader:', traderIdToAdd, 'to category:', category.name)
+      await onAddTrader(traderIdToAdd, category.name)
+
+      // 等待数据刷新完成
+      console.log('[CategoryDetailModal] Waiting for data refresh...')
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // 关闭添加模态框
+      setShowAddModal(false)
+      setSelectedTraderToAdd('')
+      
+      // 通知父组件关闭并重新打开详情弹窗以刷新数据
+      onClose()
+      
+      onShowToast?.('交易员添加成功！请重新打开分类查看', 'success')
+      console.log('[CategoryDetailModal] Trader added successfully')
+    } catch (error: any) {
+      console.error('[CategoryDetailModal] Failed to add trader:', error)
+      onShowToast?.('添加交易员失败: ' + (error.message || '未知错误'), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRemoveTrader = async (traderId: string) => {
+    if (!confirm('确定要从该分类中移除此交易员吗？')) {
+      return
+    }
+    setSaving(true)
+    try {
+      await onRemoveTrader(traderId)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <>
+      <ModernModal
+        isOpen={true}
+        onClose={onClose}
+        title={`分类详情：${category.name}`}
+        size="lg"
+      >
+        {category.description && (
+          <div className="mb-6 p-4 rounded-xl" style={{ background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+            <p className="text-sm" style={{ color: '#848E9C' }}>
+              {category.description}
+            </p>
+          </div>
+        )}
+
+        {/* 添加交易员按钮 */}
+        <div className="mb-6">
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 hover:shadow-lg flex items-center gap-3"
+            style={{
+              background: 'linear-gradient(135deg, #10B981 0%, #34D399 100%)',
+              color: '#EAECEF',
+              boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
+            }}
+          >
+            <Plus className="w-5 h-5" />
+            添加交易员
+          </button>
+        </div>
+
+        {/* 交易员列表 */}
+        <div className="space-y-3">
+          {categoryTraders.length > 0 ? (
+            categoryTraders.map((trader) => (
+              <div
+                key={trader.trader_id}
+                className="p-4 rounded-xl transition-all duration-200 hover:scale-[1.02]"
+                style={{
+                  background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                  border: '1px solid rgba(43, 49, 57, 0.6)',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4 flex-1 min-w-0">
+                    <div
+                      className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
+                      style={{
+                        background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)',
+                        color: '#fff',
+                        boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)',
+                      }}
+                    >
+                      <Bot className="w-6 h-6" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-base truncate" style={{ color: '#EAECEF' }}>
+                        {trader.trader_name}
+                      </div>
+                      <div className="text-sm truncate mt-1" style={{ color: '#848E9C' }}>
+                        ID: {trader.trader_id}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleRemoveTrader(trader.trader_id)}
+                    disabled={saving}
+                    className="px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 hover:scale-105 disabled:opacity-50 flex items-center gap-2"
+                    style={{
+                      background: 'linear-gradient(135deg, rgba(246, 70, 93, 0.2), rgba(246, 70, 93, 0.1))',
+                      color: '#F6465D',
+                      border: '1px solid rgba(246, 70, 93, 0.3)',
+                    }}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    移除
+                  </button>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="text-center py-12">
+              <div
+                className="w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center"
+                style={{ background: 'rgba(132, 142, 156, 0.1)' }}
+              >
+                <Bot className="w-8 h-8" style={{ color: '#848E9C' }} />
+              </div>
+              <div className="text-base font-medium" style={{ color: '#848E9C' }}>
+                该分类下暂无交易员
+              </div>
+              <div className="text-sm mt-2" style={{ color: '#5A5F65' }}>
+                点击上方按钮添加交易员到此分类
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 底部操作按钮 */}
+        <div className="flex gap-3 mt-8 pt-6 border-t" style={{ borderColor: 'rgba(43, 49, 57, 0.6)' }}>
+          <button
+            onClick={onClose}
+            className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105"
+            style={{
+              background: 'linear-gradient(135deg, #2B3139 0%, #374151 100%)',
+              color: '#848E9C',
+              border: '1px solid rgba(132, 142, 156, 0.2)',
+            }}
+          >
+            关闭
+          </button>
+        </div>
+      </ModernModal>
+
+      {/* 添加交易员模态框 */}
+      <ModernModal
+        isOpen={showAddModal}
+        onClose={() => {
+          setShowAddModal(false)
+          setSelectedTraderToAdd('')
+        }}
+        title="添加交易员到分类"
+        size="xl"
+      >
+        {availableTraders.length > 0 ? (
+          <div className="space-y-3 max-h-96 overflow-y-auto">
+            {availableTraders.map((trader) => (
+              <div
+                key={trader.trader_id}
+                className="p-4 rounded-xl transition-all duration-200 hover:scale-[1.005] hover:bg-gray-800/30 cursor-pointer group"
+                style={{
+                  background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                  border: '1px solid rgba(43, 49, 57, 0.6)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+                }}
+                onClick={() => handleAddTrader(trader.trader_id)}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4 flex-1 min-w-0">
+                    <div
+                      className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
+                      style={{
+                        background: trader.ai_model?.includes('deepseek')
+                          ? 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%)'
+                          : 'linear-gradient(135deg, #c084fc 0%, #a855f7 100%)',
+                        color: '#fff',
+                        boxShadow: '0 4px 12px rgba(96, 165, 250, 0.3)',
+                      }}
+                    >
+                      <Bot className="w-6 h-6" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-lg truncate" style={{ color: '#EAECEF' }}>
+                        {trader.trader_name}
+                      </div>
+                      <div
+                        className="text-sm truncate mt-1 flex items-center gap-2"
+                        style={{ color: '#848E9C' }}
+                      >
+                        <span
+                          className="px-2 py-1 rounded-md text-xs font-medium"
+                          style={{
+                            background: trader.ai_model?.includes('deepseek')
+                              ? 'rgba(96, 165, 250, 0.2)'
+                              : 'rgba(192, 132, 252, 0.2)',
+                            color: trader.ai_model?.includes('deepseek')
+                              ? '#60a5fa'
+                              : '#c084fc',
+                          }}
+                        >
+                          {trader.ai_model
+                            ? trader.ai_model.split('_').pop()?.toUpperCase() || trader.ai_model
+                            : 'Unknown'} Model
+                        </span>
+                        <span>•</span>
+                        <span>{trader.exchange_id?.toUpperCase() || 'N/A'}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`px-3 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${
+                        saving && selectedTraderToAdd === trader.trader_id ? 'animate-pulse' : ''
+                      }`}
+                      style={{
+                        background: saving && selectedTraderToAdd === trader.trader_id
+                          ? 'linear-gradient(135deg, #F59E0B 0%, #D97706 100%)'
+                          : 'linear-gradient(135deg, #10B981 0%, #059669 100%)',
+                        color: '#EAECEF',
+                        boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
+                      }}
+                    >
+                      {saving && selectedTraderToAdd === trader.trader_id ? (
+                        <div className="flex items-center gap-2">
+                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                          添加中...
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <Plus className="w-4 h-4" />
+                          添加到分类
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-12">
+            <div
+              className="w-20 h-20 rounded-full mx-auto mb-6 flex items-center justify-center"
+              style={{ background: 'rgba(132, 142, 156, 0.1)' }}
+            >
+              <Users className="w-10 h-10" style={{ color: '#848E9C' }} />
+            </div>
+            <div className="text-lg font-medium mb-2" style={{ color: '#EAECEF' }}>
+              没有可添加的交易员
+            </div>
+            <div className="text-sm" style={{ color: '#848E9C' }}>
+              所有交易员都已属于其他分类，或您没有权限添加交易员
+            </div>
+          </div>
+        )}
+      </ModernModal>
+    </>
+  )
+}
+
+// 创建分类账号模态框
+function CreateCategoryAccountModal({
+  category,
+  onSave,
+  onClose,
+  onShowToast,
+}: {
+  category: any
+  onSave: (options: {
+    generate_random_email: boolean
+    generate_random_password: boolean
+    email?: string
+    password?: string
+    category: string
+    role: 'group_leader'
+  }) => void
+  onClose: () => void
+  onShowToast?: (message: string, type: 'success' | 'error' | 'warning' | 'info') => void
+}) {
+  const [generateRandomEmail, setGenerateRandomEmail] = useState(true)
+  const [generateRandomPassword, setGenerateRandomPassword] = useState(true)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    // 验证必填字段
+    if (!generateRandomEmail && !email.trim()) {
+      if (onShowToast) {
+        onShowToast('请输入账号（邮箱）', 'warning')
+      } else {
+        alert('请输入账号（邮箱）')
+      }
+      return
+    }
+    if (!generateRandomPassword && !password.trim()) {
+      if (onShowToast) {
+        onShowToast('请输入密码', 'warning')
+      } else {
+        alert('请输入密码')
+      }
+      return
+    }
+
+    setLoading(true)
+    try {
+      await onSave({
+        generate_random_email: generateRandomEmail,
+        generate_random_password: generateRandomPassword,
+        email: generateRandomEmail ? undefined : email.trim(),
+        password: generateRandomPassword ? undefined : password.trim(),
+        category: category.name,
+        role: 'group_leader',
+      })
+    } catch (error) {
+      console.error('Failed to create category account:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModernModal
+      isOpen={true}
+      onClose={onClose}
+      title="创建分类账号"
+      size="md"
+    >
+      <div className="mb-4 p-4 rounded-xl" style={{
+        background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.05))',
+        border: '1px solid rgba(59, 130, 246, 0.3)'
+      }}>
+        <div className="text-sm font-medium mb-2" style={{ color: '#3B82F6' }}>
+          目标分类
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="font-semibold" style={{ color: '#EAECEF' }}>
+            {category.name}
+          </div>
+          {category.description && (
+            <div className="text-sm" style={{ color: '#848E9C' }}>
+              {category.description}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-6">
+
+        {/* 账号生成方式 */}
+        <div>
+          <div className="flex items-center gap-3 mb-4">
+            <input
+              id="generateEmail"
+              type="checkbox"
+              checked={generateRandomEmail}
+              onChange={(e) => setGenerateRandomEmail(e.target.checked)}
+              className="w-4 h-4 rounded border-2 border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              style={{
+                accentColor: '#10B981',
+              }}
+            />
+            <label htmlFor="generateEmail" className="text-sm font-medium" style={{ color: '#EAECEF' }}>
+              随机生成账号
+            </label>
+          </div>
+          {!generateRandomEmail && (
+            <div className="relative">
+              <input
+                type="email"
+                placeholder="请输入账号（邮箱）"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                style={{
+                  background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                  border: '1px solid rgba(43, 49, 57, 0.6)',
+                  color: '#EAECEF',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+                required
+              />
+              <div
+                className="absolute inset-0 rounded-xl pointer-events-none opacity-0 transition-opacity duration-200"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(147, 51, 234, 0.1))',
+                  border: '1px solid rgba(59, 130, 246, 0.3)',
+                }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* 密码生成方式 */}
+        <div>
+          <div className="flex items-center gap-3 mb-4">
+            <input
+              id="generatePassword"
+              type="checkbox"
+              checked={generateRandomPassword}
+              onChange={(e) => setGenerateRandomPassword(e.target.checked)}
+              className="w-4 h-4 rounded border-2 border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              style={{
+                accentColor: '#10B981',
+              }}
+            />
+            <label htmlFor="generatePassword" className="text-sm font-medium" style={{ color: '#EAECEF' }}>
+              随机生成密码
+            </label>
+          </div>
+          {!generateRandomPassword && (
+            <div className="relative">
+              <input
+                type="password"
+                placeholder="请输入密码"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl text-sm transition-all duration-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                style={{
+                  background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                  border: '1px solid rgba(43, 49, 57, 0.6)',
+                  color: '#EAECEF',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+                }}
+                required
+              />
+              <div
+                className="absolute inset-0 rounded-xl pointer-events-none opacity-0 transition-opacity duration-200"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(147, 51, 234, 0.1))',
+                  border: '1px solid rgba(59, 130, 246, 0.3)',
+                }}
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-4 mt-8 pt-6 border-t" style={{ borderColor: 'rgba(43, 49, 57, 0.6)' }}>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105"
+            style={{
+              background: 'linear-gradient(135deg, #2B3139 0%, #374151 100%)',
+              color: '#848E9C',
+              border: '1px solid rgba(132, 142, 156, 0.2)',
+            }}
+          >
+            取消
+          </button>
+          <button
+            type="submit"
+            disabled={loading}
+            className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            style={{
+              background: loading
+                ? 'linear-gradient(135deg, #4B5563 0%, #6B7280 100%)'
+                : 'linear-gradient(135deg, #3B82F6 0%, #6366F1 100%)',
+              color: '#000',
+              boxShadow: loading
+                ? 'none'
+                : '0 4px 12px rgba(59, 130, 246, 0.3)',
+            }}
+          >
+            {loading ? (
+              <>
+                <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+                创建中...
+              </>
+            ) : (
+              <>
+                <User className="w-4 h-4" />
+                创建账号
+              </>
+            )}
+          </button>
+        </div>
+      </form>
+    </ModernModal>
+  )
+}
+
+// 分类账号列表模态框
+function CategoryAccountListModal({
+  category,
+  groupLeaders,
+  categoryAccounts,
+  onViewAccount,
+  onClose,
+}: {
+  category: any
+  groupLeaders: Array<{
+    id: string
+    email: string
+    role: string
+    categories: string[]
+    trader_count: number
+    created_at: string
+  }>
+  categoryAccounts: Array<{
+    id: string
+    email: string
+    role: string
+    trader_id?: string
+    category: string
+    created_at: string
+  }>
+  onViewAccount: (accountId: string) => void
+  onClose: () => void
+}) {
+  const allAccounts = [
+    ...groupLeaders.map(gl => ({ ...gl, type: 'group_leader' as const })),
+    ...categoryAccounts.map(ca => ({ ...ca, type: ca.role as 'trader_account' | 'group_leader' }))
+  ]
+
+  return (
+    <ModernModal
+      isOpen={true}
+      onClose={onClose}
+      title={`${category.name} - 账号列表`}
+      size="lg"
+    >
+      <div className="mb-4 p-4 rounded-xl" style={{
+        background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(168, 85, 247, 0.05))',
+        border: '1px solid rgba(139, 92, 246, 0.3)'
+      }}>
+        <div className="text-sm font-medium mb-2" style={{ color: '#8B5CF6' }}>
+          分类信息
+        </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-semibold" style={{ color: '#EAECEF' }}>
+              {category.name}
+            </div>
+            {category.description && (
+              <div className="text-sm mt-1" style={{ color: '#848E9C' }}>
+                {category.description}
+              </div>
+            )}
+          </div>
+          <div className="text-sm" style={{ color: '#8B5CF6' }}>
+            共 {allAccounts.length} 个账号
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4 max-h-96 overflow-y-auto">
+        {allAccounts.length > 0 ? (
+          allAccounts.map((account) => (
+            <div
+              key={account.id}
+              className="flex items-center justify-between p-4 rounded-xl transition-all duration-200 hover:scale-[1.01]"
+              style={{
+                background: 'linear-gradient(135deg, #0B0E11 0%, #111518 100%)',
+                border: '1px solid rgba(43, 49, 57, 0.6)',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.2)',
+              }}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="font-medium text-sm" style={{ color: '#EAECEF' }}>
+                    {account.email}
+                  </div>
+                  <span
+                    className="px-2 py-1 rounded text-xs"
+                    style={{
+                      background: account.type === 'group_leader'
+                        ? 'rgba(16, 185, 129, 0.1)'
+                        : 'rgba(59, 130, 246, 0.1)',
+                      color: account.type === 'group_leader' ? '#10B981' : '#3B82F6',
+                      border: `1px solid ${account.type === 'group_leader' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(59, 130, 246, 0.3)'}`,
+                    }}
+                  >
+                    {account.type === 'group_leader' ? '小组组长' : '交易员账号'}
+                  </span>
+                </div>
+                <div className="text-xs space-y-1" style={{ color: '#848E9C' }}>
+                  <div>创建时间: {new Date(account.created_at).toLocaleString()}</div>
+                  {account.type === 'group_leader' && 'trader_count' in account && (
+                    <div>管理的交易员: {account.trader_count}个</div>
+                  )}
+                  {account.type === 'trader_account' && account.trader_id && (
+                    <div>关联交易员ID: {account.trader_id}</div>
+                  )}
+                </div>
+              </div>
+
+              <button
+                onClick={() => onViewAccount(account.id)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 hover:scale-105 flex items-center gap-2 whitespace-nowrap"
+                style={{
+                  background: 'linear-gradient(135deg, #8B5CF6 0%, #A855F7 100%)',
+                  color: '#fff',
+                  boxShadow: '0 4px 12px rgba(139, 92, 246, 0.3)',
+                }}
+              >
+                <Eye className="w-4 h-4" />
+                查看详情
+              </button>
+            </div>
+          ))
+        ) : (
+          <div className="text-center py-12">
+            <div
+              className="w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center"
+              style={{ background: 'rgba(139, 92, 246, 0.1)' }}
+            >
+              <User className="w-8 h-8" style={{ color: '#8B5CF6' }} />
+            </div>
+            <div className="text-lg font-semibold mb-2" style={{ color: '#EAECEF' }}>
+              暂无账号
+            </div>
+            <div className="text-sm" style={{ color: '#848E9C' }}>
+              该分类下还没有创建任何账号
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-4 mt-8 pt-6 border-t" style={{ borderColor: 'rgba(43, 49, 57, 0.6)' }}>
+        <button
+          onClick={onClose}
+          className="flex-1 px-6 py-3 rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-105"
+          style={{
+            background: 'linear-gradient(135deg, #F0B90B 0%, #F59E0B 100%)',
+            color: '#000',
+            boxShadow: '0 4px 12px rgba(240, 185, 11, 0.3)',
+          }}
+        >
+          关闭
+        </button>
+      </div>
+    </ModernModal>
   )
 }
