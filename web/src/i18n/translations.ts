@@ -170,7 +170,7 @@ export const translations = {
     configureAIModels: 'Configure AI Models',
     configureExchanges: 'Configure Exchanges',
     aiScanInterval: 'AI Scan Decision Interval (minutes)',
-    scanIntervalRecommend: 'Recommended: 3-10 minutes',
+    scanIntervalRecommend: 'Min: 1 minute (for testing), Recommended: 3-10 minutes (for production)',
     useTestnet: 'Use Testnet',
     enabled: 'Enabled',
     save: 'Save',
@@ -197,7 +197,7 @@ export const translations = {
     enterUser: 'Enter User',
     enterSigner: 'Enter Signer Address',
     enterSecretKey: 'Enter Secret Key',
-    enterPassphrase: 'Enter Passphrase (Required for OKX)',
+    enterPassphrase: 'Enter Passphrase (Required)',
     hyperliquidPrivateKeyDesc:
       'Hyperliquid uses private key for trading authentication',
     hyperliquidWalletAddressDesc:
@@ -942,7 +942,7 @@ export const translations = {
     configureAIModels: '配置AI模型',
     configureExchanges: '配置交易所',
     aiScanInterval: 'AI 扫描决策间隔 (分钟)',
-    scanIntervalRecommend: '建议: 3-10分钟',
+    scanIntervalRecommend: '最小: 1分钟(测试用), 建议: 3-10分钟(生产环境)',
     useTestnet: '使用测试网',
     enabled: '启用',
     save: '保存',
@@ -969,7 +969,7 @@ export const translations = {
     enterWalletAddress: '输入钱包地址',
     enterUser: '输入用户名',
     enterSigner: '输入签名者地址',
-    enterPassphrase: '输入Passphrase (OKX必填)',
+    enterPassphrase: '输入Passphrase (必填)',
     hyperliquidPrivateKeyDesc: 'Hyperliquid 使用私钥进行交易认证',
     hyperliquidWalletAddressDesc: '与私钥对应的钱包地址',
     asterUserDesc:

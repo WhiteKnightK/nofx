@@ -39,6 +39,12 @@ type AutoTraderConfig struct {
 	AsterSigner     string // Aster API钱包地址
 	AsterPrivateKey string // Aster API钱包私钥
 
+	// Bitget配置
+	BitgetAPIKey     string // Bitget API Key
+	BitgetSecretKey  string // Bitget Secret Key
+	BitgetPassphrase string // Bitget API Passphrase
+	BitgetTestnet    bool   // 是否使用测试网
+
 	CoinPoolAPIURL string
 
 	// AI配置
@@ -188,6 +194,9 @@ func NewAutoTrader(config AutoTraderConfig, database interface{}, userID string)
 		if err != nil {
 			return nil, fmt.Errorf("初始化Aster交易器失败: %w", err)
 		}
+	case "bitget":
+		log.Printf("🏦 [%s] 使用Bitget合约交易", config.Name)
+		trader = NewBitgetTrader(config.BitgetAPIKey, config.BitgetSecretKey, config.BitgetPassphrase, config.BitgetTestnet)
 	default:
 		return nil, fmt.Errorf("不支持的交易平台: %s", config.Exchange)
 	}
@@ -997,6 +1006,14 @@ func (at *AutoTrader) executeUpdateStopLossWithRecord(decision *decision.Decisio
 	side, _ := targetPosition["side"].(string)
 	positionSide := strings.ToUpper(side)
 	positionAmt, _ := targetPosition["positionAmt"].(float64)
+	
+	// 🔑 关键修复：使用 available（可平数量）而不是 positionAmt（总持仓）
+	// 当已有止盈止损单时，available < positionAmt，使用 positionAmt 会导致 43023 "仓位不足" 错误
+	available, ok := targetPosition["available"].(float64)
+	if !ok || available <= 0 {
+		available = positionAmt // 降级到 positionAmt
+	}
+	log.Printf("  📊 持仓信息: %s %s 总持仓=%.4f 可平=%.4f", decision.Symbol, positionSide, positionAmt, available)
 
 	// 验证新止损价格合理性
 	if positionSide == "LONG" && decision.NewStopLoss >= marketData.CurrentPrice {
@@ -1034,8 +1051,8 @@ func (at *AutoTrader) executeUpdateStopLossWithRecord(decision *decision.Decisio
 		// 不中断执行，继续设置新止损
 	}
 
-	// 调用交易所 API 修改止损
-	quantity := math.Abs(positionAmt)
+	// 调用交易所 API 修改止损（使用 available 可平数量）
+	quantity := math.Abs(available)
 	err = at.trader.SetStopLoss(decision.Symbol, positionSide, quantity, decision.NewStopLoss)
 	if err != nil {
 		return fmt.Errorf("修改止损失败: %w", err)
@@ -1081,6 +1098,14 @@ func (at *AutoTrader) executeUpdateTakeProfitWithRecord(decision *decision.Decis
 	side, _ := targetPosition["side"].(string)
 	positionSide := strings.ToUpper(side)
 	positionAmt, _ := targetPosition["positionAmt"].(float64)
+	
+	// 🔑 关键修复：使用 available（可平数量）而不是 positionAmt（总持仓）
+	// 当已有止盈止损单时，available < positionAmt，使用 positionAmt 会导致 43023 "仓位不足" 错误
+	available, ok := targetPosition["available"].(float64)
+	if !ok || available <= 0 {
+		available = positionAmt // 降级到 positionAmt
+	}
+	log.Printf("  📊 持仓信息: %s %s 总持仓=%.4f 可平=%.4f", decision.Symbol, positionSide, positionAmt, available)
 
 	// 验证新止盈价格合理性
 	if positionSide == "LONG" && decision.NewTakeProfit <= marketData.CurrentPrice {
@@ -1118,8 +1143,8 @@ func (at *AutoTrader) executeUpdateTakeProfitWithRecord(decision *decision.Decis
 		// 不中断执行，继续设置新止盈
 	}
 
-	// 调用交易所 API 修改止盈
-	quantity := math.Abs(positionAmt)
+	// 调用交易所 API 修改止盈（使用 available 可平数量）
+	quantity := math.Abs(available)
 	err = at.trader.SetTakeProfit(decision.Symbol, positionSide, quantity, decision.NewTakeProfit)
 	if err != nil {
 		return fmt.Errorf("修改止盈失败: %w", err)

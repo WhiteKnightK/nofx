@@ -425,6 +425,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         ai_model_id: data.ai_model_id,
         exchange_id: data.exchange_id,
         initial_balance: data.initial_balance,
+        system_prompt_template: data.system_prompt_template, // 回传当前提示词模板
         scan_interval_minutes: data.scan_interval_minutes,
         btc_eth_leverage: data.btc_eth_leverage,
         altcoin_leverage: data.altcoin_leverage,
@@ -712,7 +713,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     hyperliquidWalletAddr?: string,
     asterUser?: string,
     asterSigner?: string,
-    asterPrivateKey?: string
+    asterPrivateKey?: string,
+    passphrase?: string
   ) => {
     try {
       // 找到要配置的交易所（从supportedExchanges中）
@@ -742,6 +744,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                   asterUser,
                   asterSigner,
                   asterPrivateKey,
+                  passphrase,
                   enabled: true,
                 }
               : e
@@ -757,6 +760,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           asterUser,
           asterSigner,
           asterPrivateKey,
+          passphrase,
           enabled: true,
         }
         updatedExchanges = [...(allExchanges || []), newExchange]
@@ -770,6 +774,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
               enabled: exchange.enabled,
               api_key: exchange.apiKey || '',
               secret_key: exchange.secretKey || '',
+              passphrase: exchange.passphrase || '',
               testnet: exchange.testnet || false,
               hyperliquid_wallet_addr: exchange.hyperliquidWalletAddr || '',
               aster_user: exchange.asterUser || '',
@@ -2687,9 +2692,22 @@ function ExchangeConfigModal({
         asterSigner.trim(),
         asterPrivateKey.trim()
       )
-    } else if (selectedExchange?.id === 'okx') {
+    } else if (
+      selectedExchange?.id === 'okx' ||
+      selectedExchange?.id === 'bitget'
+    ) {
       if (!apiKey.trim() || !secretKey.trim() || !passphrase.trim()) return
-      await onSave(selectedExchangeId, apiKey.trim(), secretKey.trim(), testnet)
+      await onSave(
+        selectedExchangeId,
+        apiKey.trim(),
+        secretKey.trim(),
+        testnet,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        passphrase.trim()
+      )
     } else {
       // 默认情况（其他CEX交易所）
       if (!apiKey.trim() || !secretKey.trim()) return
@@ -2804,6 +2822,7 @@ function ExchangeConfigModal({
             <>
               {/* Binance 和其他 CEX 交易所的字段 */}
               {(selectedExchange.id === 'binance' ||
+                selectedExchange.id === 'bitget' ||
                 selectedExchange.type === 'cex') &&
                 selectedExchange.id !== 'hyperliquid' &&
                 selectedExchange.id !== 'aster' && (
@@ -2949,7 +2968,8 @@ function ExchangeConfigModal({
                       />
                     </div>
 
-                    {selectedExchange.id === 'okx' && (
+                    {(selectedExchange.id === 'okx' ||
+                      selectedExchange.id === 'bitget') && (
                       <div>
                         <label
                           className="block text-sm font-semibold mb-2"
@@ -3420,7 +3440,6 @@ function ExchangeConfigModal({
     </div>
   )
 }
-
 // Create Account Modal Component (创建交易员账号模态框)
 function CreateAccountModal({
   traderId,

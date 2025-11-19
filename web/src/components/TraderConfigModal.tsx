@@ -73,7 +73,12 @@ export function TraderConfigModal({
 
   useEffect(() => {
     if (traderData) {
-      setFormData(traderData)
+      // 🔑 编辑模式：直接使用 traderData 的所有字段（包括 system_prompt_template）
+      setFormData({
+        ...traderData,
+        // 只有当 system_prompt_template 为 undefined 或空字符串时，才设置为 'default'
+        system_prompt_template: traderData.system_prompt_template || 'default',
+      })
       // 设置已选择的币种
       if (traderData.trading_symbols) {
         const coins = traderData.trading_symbols
@@ -83,6 +88,7 @@ export function TraderConfigModal({
         setSelectedCoins(coins)
       }
     } else if (!isEditMode) {
+      // 创建模式：使用默认值
       setFormData({
         trader_name: '',
         ai_model: availableModels[0]?.id || '',
@@ -99,13 +105,6 @@ export function TraderConfigModal({
         initial_balance: 1000,
         scan_interval_minutes: 3,
       })
-    }
-    // 确保旧数据也有默认的 system_prompt_template
-    if (traderData && traderData.system_prompt_template === undefined) {
-      setFormData((prev) => ({
-        ...prev,
-        system_prompt_template: 'default',
-      }))
     }
   }, [traderData, isEditMode, availableModels, availableExchanges])
 
@@ -464,12 +463,12 @@ export function TraderConfigModal({
                     onChange={(e) => {
                       const parsedValue = Number(e.target.value)
                       const safeValue = Number.isFinite(parsedValue)
-                        ? Math.max(3, parsedValue)
+                        ? Math.max(1, parsedValue)  // 允许最小1分钟（用于测试）
                         : 3
                       handleInputChange('scan_interval_minutes', safeValue)
                     }}
                     className="w-full px-3 py-2 bg-[#0B0E11] border border-[#2B3139] rounded text-[#EAECEF] focus:border-[#F0B90B] focus:outline-none"
-                    min="3"
+                    min="1"
                     max="60"
                     step="1"
                   />

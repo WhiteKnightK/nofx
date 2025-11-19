@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"nofx/auth"
 	"nofx/config"
+	"nofx/crypto"
 	"nofx/decision"
 	"nofx/manager"
 	"nofx/trader"
@@ -25,11 +26,12 @@ type Server struct {
 	router        *gin.Engine
 	traderManager *manager.TraderManager
 	database      *config.Database
+	cryptoService *crypto.CryptoService
 	port          int
 }
 
 // NewServer 创建API服务器
-func NewServer(traderManager *manager.TraderManager, database *config.Database, port int) *Server {
+func NewServer(traderManager *manager.TraderManager, database *config.Database, cryptoService *crypto.CryptoService, port int) *Server {
 	// 设置为Release模式（减少日志输出）
 	gin.SetMode(gin.ReleaseMode)
 
@@ -42,6 +44,7 @@ func NewServer(traderManager *manager.TraderManager, database *config.Database, 
 		router:        router,
 		traderManager: traderManager,
 		database:      database,
+		cryptoService: cryptoService,
 		port:          port,
 	}
 
@@ -96,6 +99,9 @@ func (s *Server) setupRoutes() {
 		// 系统配置（无需认证，用于前端判断是否管理员模式/注册是否开启）
 		api.GET("/config", s.handleGetSystemConfig)
 
+		// 加密服务（无需认证）
+		api.GET("/crypto/public-key", s.handleGetPublicKey)
+
 		// 系统提示词模板管理（仅在非管理员模式下公开）
 		if !auth.IsAdminMode() {
 			// 系统提示词模板管理（无需认证）
@@ -106,7 +112,8 @@ func (s *Server) setupRoutes() {
 			api.GET("/traders", s.handlePublicTraderList)
 			api.GET("/competition", s.handlePublicCompetition)
 			api.GET("/top-traders", s.handleTopTraders)
-			api.GET("/equity-history", s.handleEquityHistory)
+			// 单个交易员收益曲线：需要登录使用，见 protected 组的 /equity-history
+			// 批量历史曲线对比：仍然保留为无需认证的公开接口
 			api.POST("/equity-history-batch", s.handleEquityHistoryBatch)
 			api.GET("/traders/:id/public-config", s.handleGetPublicTraderConfig)
 		}
@@ -177,6 +184,7 @@ func (s *Server) setupRoutes() {
 			protected.GET("/decisions", s.handleDecisions)
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
 			protected.GET("/statistics", s.handleStatistics)
+			protected.GET("/equity-history", s.handleEquityHistory) // 需要认证，使用当前登录用户做权限校验
 			protected.GET("/performance", s.handlePerformance)
 		}
 	}
@@ -187,6 +195,28 @@ func (s *Server) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
 		"time":   c.Request.Context().Value("time"),
+	})
+}
+
+// handleGetPublicKey 获取RSA公钥（用于前端加密敏感数据）
+func (s *Server) handleGetPublicKey(c *gin.Context) {
+	if s.cryptoService == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Crypto service not initialized",
+		})
+		return
+	}
+
+	publicKeyPEM := s.cryptoService.GetPublicKeyPEM()
+	if publicKeyPEM == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to get public key",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"public_key": publicKeyPEM,
 	})
 }
 
@@ -519,6 +549,7 @@ type UpdateExchangeConfigRequest struct {
 		Enabled               bool   `json:"enabled"`
 		APIKey                string `json:"api_key"`
 		SecretKey             string `json:"secret_key"`
+		Passphrase            string `json:"passphrase"`
 		Testnet               bool   `json:"testnet"`
 		HyperliquidWalletAddr string `json:"hyperliquid_wallet_addr"`
 		AsterUser             string `json:"aster_user"`
@@ -597,11 +628,15 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		systemPromptTemplate = req.SystemPromptTemplate
 	}
 
-	// 设置扫描间隔默认值
+	// 设置扫描间隔默认值（移除最小3分钟限制，允许测试用）
 	scanIntervalMinutes := req.ScanIntervalMinutes
-	if scanIntervalMinutes < 3 {
-		scanIntervalMinutes = 3 // 默认3分钟，且不允许小于3
+	if scanIntervalMinutes <= 0 {
+		scanIntervalMinutes = 3 // 默认3分钟
 	}
+	// 注释掉最小3分钟限制，允许设置1分钟用于测试
+	// if scanIntervalMinutes < 3 {
+	// 	scanIntervalMinutes = 3
+	// }
 
 	// ✅ 直接使用用户输入的初始余额，不进行任何自动查询或覆盖
 	actualBalance := req.InitialBalance
@@ -675,17 +710,18 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 
 // UpdateTraderRequest 更新交易员请求
 type UpdateTraderRequest struct {
-	Name                string  `json:"name" binding:"required"`
-	AIModelID           string  `json:"ai_model_id" binding:"required"`
-	ExchangeID          string  `json:"exchange_id" binding:"required"`
-	InitialBalance      float64 `json:"initial_balance"`
-	ScanIntervalMinutes int     `json:"scan_interval_minutes"`
-	BTCETHLeverage      int     `json:"btc_eth_leverage"`
-	AltcoinLeverage     int     `json:"altcoin_leverage"`
-	TradingSymbols      string  `json:"trading_symbols"`
-	CustomPrompt        string  `json:"custom_prompt"`
-	OverrideBasePrompt  bool    `json:"override_base_prompt"`
-	IsCrossMargin       *bool   `json:"is_cross_margin"`
+	Name                 string  `json:"name" binding:"required"`
+	AIModelID            string  `json:"ai_model_id" binding:"required"`
+	ExchangeID           string  `json:"exchange_id" binding:"required"`
+	InitialBalance       float64 `json:"initial_balance"`
+	ScanIntervalMinutes  int     `json:"scan_interval_minutes"`
+	BTCETHLeverage       int     `json:"btc_eth_leverage"`
+	AltcoinLeverage      int     `json:"altcoin_leverage"`
+	TradingSymbols       string  `json:"trading_symbols"`
+	CustomPrompt         string  `json:"custom_prompt"`
+	OverrideBasePrompt   bool    `json:"override_base_prompt"`
+	SystemPromptTemplate string  `json:"system_prompt_template"` // 系统提示词模板名称
+	IsCrossMargin        *bool   `json:"is_cross_margin"`
 }
 
 // handleUpdateTrader 更新交易员配置
@@ -742,12 +778,19 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		altcoinLeverage = existingTrader.AltcoinLeverage // 保持原值
 	}
 
-	// 设置扫描间隔，允许更新
+	// 设置扫描间隔，允许更新（移除最小3分钟限制，允许测试用）
 	scanIntervalMinutes := req.ScanIntervalMinutes
 	if scanIntervalMinutes <= 0 {
 		scanIntervalMinutes = existingTrader.ScanIntervalMinutes // 保持原值
-	} else if scanIntervalMinutes < 3 {
-		scanIntervalMinutes = 3
+		// 注释掉最小3分钟限制，允许设置1分钟用于测试
+		// } else if scanIntervalMinutes < 3 {
+		// 	scanIntervalMinutes = 3
+	}
+
+	// 设置系统提示词模板（支持更新）
+	systemPromptTemplate := req.SystemPromptTemplate
+	if systemPromptTemplate == "" {
+		systemPromptTemplate = existingTrader.SystemPromptTemplate // 保持原值
 	}
 
 	// 更新交易员配置
@@ -763,7 +806,7 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		TradingSymbols:       req.TradingSymbols,
 		CustomPrompt:         req.CustomPrompt,
 		OverrideBasePrompt:   req.OverrideBasePrompt,
-		SystemPromptTemplate: existingTrader.SystemPromptTemplate, // 保持原值
+		SystemPromptTemplate: systemPromptTemplate, // 🔑 允许更新提示词模板
 		IsCrossMargin:        isCrossMargin,
 		ScanIntervalMinutes:  scanIntervalMinutes,
 		IsRunning:            existingTrader.IsRunning, // 保持原值
@@ -776,13 +819,23 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		return
 	}
 
+	// 如果交易员正在运行，更新内存中的配置（立即生效，无需重启）
+	if existingTrader.IsRunning {
+		runningTrader, err := s.traderManager.GetTrader(traderID)
+		if err == nil && runningTrader != nil {
+			// 更新系统提示词模板（下次 AI 决策时生效）
+			runningTrader.SetSystemPromptTemplate(systemPromptTemplate)
+			log.Printf("✓ 已更新运行中交易员的系统提示词模板: %s → %s", existingTrader.SystemPromptTemplate, systemPromptTemplate)
+		}
+	}
+
 	// 重新加载交易员到内存
 	err = s.traderManager.LoadUserTraders(s.database, userID)
 	if err != nil {
 		log.Printf("⚠️ 重新加载用户交易员到内存失败: %v", err)
 	}
 
-	log.Printf("✓ 更新交易员成功: %s (模型: %s, 交易所: %s)", req.Name, req.AIModelID, req.ExchangeID)
+	log.Printf("✓ 更新交易员成功: %s (模型: %s, 交易所: %s, 提示词模板: %s)", req.Name, req.AIModelID, req.ExchangeID, systemPromptTemplate)
 
 	c.JSON(http.StatusOK, gin.H{
 		"trader_id":   traderID,
@@ -1284,8 +1337,41 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 func (s *Server) handleUpdateModelConfigs(c *gin.Context) {
 	userID := c.GetString("user_id")
 	var req UpdateModelConfigRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+
+	// 尝试解析为加密数据
+	var encryptedPayload crypto.EncryptedPayload
+	if err := c.ShouldBindJSON(&encryptedPayload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to parse request: %v", err)})
+		return
+	}
+
+	// 检查是否为加密数据（通过检查加密字段是否存在）
+	if encryptedPayload.Ciphertext != "" {
+		// 解密数据
+		if s.cryptoService == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Crypto service not initialized"})
+			return
+		}
+
+		plaintext, err := s.cryptoService.DecryptSensitiveData(&encryptedPayload)
+		if err != nil {
+			log.Printf("❌ 解密失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Decryption failed: %v", err)})
+			return
+		}
+
+		// 解析解密后的JSON
+		if err := json.Unmarshal([]byte(plaintext), &req); err != nil {
+			log.Printf("❌ 解析解密后的JSON失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid decrypted JSON: %v", err)})
+			return
+		}
+
+		log.Printf("✓ 成功解密请求数据，包含 %d 个模型配置", len(req.Models))
+	} else {
+		// 尝试作为普通JSON解析（理论上不应该到这里，因为前端总是发送加密数据）
+		log.Printf("⚠️ 接收到非加密数据，这不应该发生")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Expected encrypted payload"})
 		return
 	}
 
@@ -1328,14 +1414,47 @@ func (s *Server) handleGetExchangeConfigs(c *gin.Context) {
 func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 	userID := c.GetString("user_id")
 	var req UpdateExchangeConfigRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+
+	// 尝试解析为加密数据
+	var encryptedPayload crypto.EncryptedPayload
+	if err := c.ShouldBindJSON(&encryptedPayload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to parse request: %v", err)})
+		return
+	}
+
+	// 检查是否为加密数据（通过检查加密字段是否存在）
+	if encryptedPayload.Ciphertext != "" {
+		// 解密数据
+		if s.cryptoService == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Crypto service not initialized"})
+			return
+		}
+
+		plaintext, err := s.cryptoService.DecryptSensitiveData(&encryptedPayload)
+		if err != nil {
+			log.Printf("❌ 解密失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Decryption failed: %v", err)})
+			return
+		}
+
+		// 解析解密后的JSON
+		if err := json.Unmarshal([]byte(plaintext), &req); err != nil {
+			log.Printf("❌ 解析解密后的JSON失败: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid decrypted JSON: %v", err)})
+			return
+		}
+
+		log.Printf("✓ 成功解密请求数据，包含 %d 个交易所配置", len(req.Exchanges))
+	} else {
+		// 尝试作为普通JSON解析（理论上不应该到这里，因为前端总是发送加密数据）
+		log.Printf("⚠️ 接收到非加密数据，这不应该发生")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Expected encrypted payload"})
 		return
 	}
 
 	// 更新每个交易所的配置
 	for exchangeID, exchangeData := range req.Exchanges {
-		err := s.database.UpdateExchange(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey)
+		err := s.database.UpdateExchange(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Passphrase, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新交易所 %s 失败: %v", exchangeID, err)})
 			return
@@ -1636,21 +1755,22 @@ func (s *Server) handleGetTraderConfig(c *gin.Context) {
 	aiModelID := traderConfig.AIModelID
 
 	result := map[string]interface{}{
-		"trader_id":             traderConfig.ID,
-		"trader_name":           traderConfig.Name,
-		"ai_model":              aiModelID,
-		"exchange_id":           traderConfig.ExchangeID,
-		"initial_balance":       traderConfig.InitialBalance,
-		"scan_interval_minutes": traderConfig.ScanIntervalMinutes,
-		"btc_eth_leverage":      traderConfig.BTCETHLeverage,
-		"altcoin_leverage":      traderConfig.AltcoinLeverage,
-		"trading_symbols":       traderConfig.TradingSymbols,
-		"custom_prompt":         traderConfig.CustomPrompt,
-		"override_base_prompt":  traderConfig.OverrideBasePrompt,
-		"is_cross_margin":       traderConfig.IsCrossMargin,
-		"use_coin_pool":         traderConfig.UseCoinPool,
-		"use_oi_top":            traderConfig.UseOITop,
-		"is_running":            isRunning,
+		"trader_id":              traderConfig.ID,
+		"trader_name":            traderConfig.Name,
+		"ai_model":               aiModelID,
+		"exchange_id":            traderConfig.ExchangeID,
+		"system_prompt_template": traderConfig.SystemPromptTemplate,
+		"initial_balance":        traderConfig.InitialBalance,
+		"scan_interval_minutes":  traderConfig.ScanIntervalMinutes,
+		"btc_eth_leverage":       traderConfig.BTCETHLeverage,
+		"altcoin_leverage":       traderConfig.AltcoinLeverage,
+		"trading_symbols":        traderConfig.TradingSymbols,
+		"custom_prompt":          traderConfig.CustomPrompt,
+		"override_base_prompt":   traderConfig.OverrideBasePrompt,
+		"is_cross_margin":        traderConfig.IsCrossMargin,
+		"use_coin_pool":          traderConfig.UseCoinPool,
+		"use_oi_top":             traderConfig.UseOITop,
+		"is_running":             isRunning,
 	}
 
 	c.JSON(http.StatusOK, result)
@@ -1871,6 +1991,7 @@ func (s *Server) handleCompetition(c *gin.Context) {
 func (s *Server) handleEquityHistory(c *gin.Context) {
 	_, traderID, err := s.getTraderFromQuery(c)
 	if err != nil {
+		log.Printf("❌ handleEquityHistory: getTraderFromQuery失败 - trader_id=%s, error=%v", c.Query("trader_id"), err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

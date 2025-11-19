@@ -115,6 +115,7 @@ export interface Exchange {
   enabled: boolean
   apiKey?: string
   secretKey?: string
+  passphrase?: string
   testnet?: boolean
   // Hyperliquid 特定字段
   hyperliquidWalletAddr?: string
@@ -158,6 +159,7 @@ export interface UpdateExchangeConfigRequest {
       enabled: boolean
       api_key: string
       secret_key: string
+      passphrase?: string
       testnet?: boolean
       // Hyperliquid 特定字段
       hyperliquid_wallet_addr?: string

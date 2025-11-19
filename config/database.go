@@ -29,7 +29,7 @@ type DatabaseInterface interface {
 	GetAIModels(userID string) ([]*AIModelConfig, error)
 	UpdateAIModel(userID, id string, enabled bool, apiKey, customAPIURL, customModelName string) error
 	GetExchanges(userID string) ([]*ExchangeConfig, error)
-	UpdateExchange(userID, id string, enabled bool, apiKey, secretKey string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string) error
+	UpdateExchange(userID, id string, enabled bool, apiKey, secretKey, passphrase string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string) error
 	CreateAIModel(userID, id, name, provider string, enabled bool, apiKey, customAPIURL string) error
 	CreateExchange(userID, id, name, typ string, enabled bool, apiKey, secretKey string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string) error
 	CreateTrader(trader *TraderRecord) error
@@ -269,6 +269,7 @@ func (d *Database) createTables() error {
 		`ALTER TABLE exchanges ADD COLUMN aster_user TEXT DEFAULT ''`,
 		`ALTER TABLE exchanges ADD COLUMN aster_signer TEXT DEFAULT ''`,
 		`ALTER TABLE exchanges ADD COLUMN aster_private_key TEXT DEFAULT ''`,
+		`ALTER TABLE exchanges ADD COLUMN passphrase TEXT DEFAULT ''`,
 		`ALTER TABLE traders ADD COLUMN custom_prompt TEXT DEFAULT ''`,
 		`ALTER TABLE traders ADD COLUMN override_base_prompt BOOLEAN DEFAULT 0`,
 		`ALTER TABLE traders ADD COLUMN is_cross_margin BOOLEAN DEFAULT 1`,             // 默认为全仓模式
@@ -350,6 +351,7 @@ func (d *Database) initDefaultData() error {
 		{"binance", "Binance Futures", "binance"},
 		{"hyperliquid", "Hyperliquid", "hyperliquid"},
 		{"aster", "Aster DEX", "aster"},
+		{"bitget", "Bitget Futures", "bitget"},
 	}
 
 	for _, exchange := range exchanges {
@@ -418,6 +420,7 @@ func (d *Database) migrateExchangesTable() error {
 			enabled BOOLEAN DEFAULT 0,
 			api_key TEXT DEFAULT '',
 			secret_key TEXT DEFAULT '',
+			passphrase TEXT DEFAULT '',
 			testnet BOOLEAN DEFAULT 0,
 			hyperliquid_wallet_addr TEXT DEFAULT '',
 			aster_user TEXT DEFAULT '',
@@ -511,14 +514,15 @@ type AIModelConfig struct {
 
 // ExchangeConfig 交易所配置
 type ExchangeConfig struct {
-	ID        string `json:"id"`
-	UserID    string `json:"user_id"`
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Enabled   bool   `json:"enabled"`
-	APIKey    string `json:"apiKey"`    // For Binance: API Key; For Hyperliquid: Agent Private Key (should have ~0 balance)
-	SecretKey string `json:"secretKey"` // For Binance: Secret Key; Not used for Hyperliquid
-	Testnet   bool   `json:"testnet"`
+	ID         string `json:"id"`
+	UserID     string `json:"user_id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Enabled    bool   `json:"enabled"`
+	APIKey     string `json:"apiKey"`     // For Binance: API Key; For Hyperliquid: Agent Private Key (should have ~0 balance)
+	SecretKey  string `json:"secretKey"`  // For Binance: Secret Key; Not used for Hyperliquid
+	Passphrase string `json:"passphrase"` // For OKX/Bitget: Passphrase
+	Testnet    bool   `json:"testnet"`
 	// Hyperliquid Agent Wallet configuration (following official best practices)
 	// Reference: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/nonces-and-api-wallets
 	HyperliquidWalletAddr string `json:"hyperliquidWalletAddr"` // Main Wallet Address (holds funds, never expose private key)
@@ -838,6 +842,7 @@ func (d *Database) GetExchanges(userID string) ([]*ExchangeConfig, error) {
 		       COALESCE(aster_user, '') as aster_user,
 		       COALESCE(aster_signer, '') as aster_signer,
 		       COALESCE(aster_private_key, '') as aster_private_key,
+		       COALESCE(passphrase, '') as passphrase,
 		       created_at, updated_at 
 		FROM exchanges WHERE user_id = ? ORDER BY id
 	`, userID)
@@ -854,7 +859,7 @@ func (d *Database) GetExchanges(userID string) ([]*ExchangeConfig, error) {
 			&exchange.ID, &exchange.UserID, &exchange.Name, &exchange.Type,
 			&exchange.Enabled, &exchange.APIKey, &exchange.SecretKey, &exchange.Testnet,
 			&exchange.HyperliquidWalletAddr, &exchange.AsterUser,
-			&exchange.AsterSigner, &exchange.AsterPrivateKey,
+			&exchange.AsterSigner, &exchange.AsterPrivateKey, &exchange.Passphrase,
 			&exchange.CreatedAt, &exchange.UpdatedAt,
 		)
 		if err != nil {
@@ -865,6 +870,7 @@ func (d *Database) GetExchanges(userID string) ([]*ExchangeConfig, error) {
 		exchange.APIKey = d.decryptSensitiveData(exchange.APIKey)
 		exchange.SecretKey = d.decryptSensitiveData(exchange.SecretKey)
 		exchange.AsterPrivateKey = d.decryptSensitiveData(exchange.AsterPrivateKey)
+		exchange.Passphrase = d.decryptSensitiveData(exchange.Passphrase)
 
 		exchanges = append(exchanges, &exchange)
 	}
@@ -874,7 +880,7 @@ func (d *Database) GetExchanges(userID string) ([]*ExchangeConfig, error) {
 
 // UpdateExchange 更新交易所配置，如果不存在则创建用户特定配置
 // 🔒 安全特性：空值不会覆盖现有的敏感字段（api_key, secret_key, aster_private_key）
-func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secretKey string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string) error {
+func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secretKey, passphrase string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string) error {
 	log.Printf("🔧 UpdateExchange: userID=%s, id=%s, enabled=%v", userID, id, enabled)
 
 	// 构建动态 UPDATE SET 子句
@@ -900,6 +906,12 @@ func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secre
 		encryptedSecretKey := d.encryptSensitiveData(secretKey)
 		setClauses = append(setClauses, "secret_key = ?")
 		args = append(args, encryptedSecretKey)
+	}
+
+	if passphrase != "" {
+		encryptedPassphrase := d.encryptSensitiveData(passphrase)
+		setClauses = append(setClauses, "passphrase = ?")
+		args = append(args, encryptedPassphrase)
 	}
 
 	if asterPrivateKey != "" {
@@ -956,11 +968,16 @@ func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secre
 		log.Printf("🆕 UpdateExchange: 创建新记录 ID=%s, name=%s, type=%s", id, name, typ)
 
 		// 创建用户特定的配置，使用原始的交易所ID
+		encryptedAPIKey := d.encryptSensitiveData(apiKey)
+		encryptedSecretKey := d.encryptSensitiveData(secretKey)
+		encryptedPassphrase := d.encryptSensitiveData(passphrase)
+		encryptedAsterPrivateKey := d.encryptSensitiveData(asterPrivateKey)
+
 		_, err = d.db.Exec(`
-			INSERT INTO exchanges (id, user_id, name, type, enabled, api_key, secret_key, testnet,
+			INSERT INTO exchanges (id, user_id, name, type, enabled, api_key, secret_key, passphrase, testnet,
 			                       hyperliquid_wallet_addr, aster_user, aster_signer, aster_private_key, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-		`, id, userID, name, typ, enabled, apiKey, secretKey, testnet, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		`, id, userID, name, typ, enabled, encryptedAPIKey, encryptedSecretKey, encryptedPassphrase, testnet, hyperliquidWalletAddr, asterUser, asterSigner, encryptedAsterPrivateKey)
 
 		if err != nil {
 			log.Printf("❌ UpdateExchange: 创建记录失败: %v", err)
@@ -1100,7 +1117,7 @@ func (d *Database) UpdateTraderInitialBalance(userID, id string, newBalance floa
 
 	// 检查是否来自于允许的调用路径
 	if strings.Contains(frame.Function, "handleSyncBalance") ||
-	   strings.Contains(frame.File, "server.go") && strings.Contains(frame.Function, "handleSyncBalance") {
+		strings.Contains(frame.File, "server.go") && strings.Contains(frame.Function, "handleSyncBalance") {
 		log.Printf("✅ 允许的手动同步操作")
 		_, err := d.db.Exec(`UPDATE traders SET initial_balance = ? WHERE id = ? AND user_id = ?`, newBalance, id, userID)
 		return err
@@ -1403,7 +1420,6 @@ func (d *Database) decryptSensitiveData(encrypted string) string {
 
 	return decrypted
 }
-
 // migrateUserRoles 数据迁移：设置现有用户的role字段
 func (d *Database) migrateUserRoles() {
 	_, err := d.db.Exec(`UPDATE users SET role = 'user' WHERE role IS NULL OR role = ''`)
@@ -1921,3 +1937,4 @@ func (d *Database) DeleteGroupLeaderCategories(groupLeaderID string) error {
 	_, err := d.db.Exec(`DELETE FROM group_leader_categories WHERE group_leader_id = ?`, groupLeaderID)
 	return err
 }
+
