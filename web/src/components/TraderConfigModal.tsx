@@ -196,7 +196,7 @@ export function TraderConfigModal({
     try {
       const token = localStorage.getItem('token')
       const response = await fetch(
-        `/api/account?trader_id=${traderData.trader_id}`,
+        `/api/traders/${traderData.trader_id}/current-balance`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -210,9 +210,8 @@ export function TraderConfigModal({
 
       const data = await response.json()
 
-      // total_equity = 当前账户净值（包含未实现盈亏）
-      // 这应该作为新的初始余额
-      const currentBalance = data.total_equity || data.balance || 0
+      // 使用返回的current_balance作为初始余额
+      const currentBalance = data.current_balance || 0
 
       setFormData((prev) => ({ ...prev, initial_balance: currentBalance }))
 

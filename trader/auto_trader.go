@@ -412,8 +412,11 @@ func (at *AutoTrader) runCycle() error {
 		log.Println("📅 日盈亏已重置")
 	}
 
-	// 3. 自动同步余额（每10分钟检查一次，充值/提现后自动更新）
-	at.autoSyncBalanceIfNeeded()
+	// 3. 自动同步余额功能已禁用
+	// 原因：自动同步会覆盖用户手动设置的初始余额，导致盈亏计算错误
+	// 例如：用户设置初始余额200，实际余额130（亏70），但自动同步后initialBalance变成130，显示盈利0而不是亏损70
+	// 如果需要同步余额，请使用手动同步功能（API: POST /traders/:id/sync-balance）
+	// at.autoSyncBalanceIfNeeded()
 
 	// 4. 收集交易上下文
 	ctx, err := at.buildTradingContext()
@@ -1290,6 +1293,9 @@ func (at *AutoTrader) GetAccountInfo() (map[string]interface{}, error) {
 
 	// Total Equity = 钱包余额 + 未实现盈亏
 	totalEquity := totalWalletBalance + totalUnrealizedProfit
+
+	// 记录初始余额状态（用于调试）
+	log.Printf("🔍 [%s] GetAccountInfo - 当前initial_balance: %.2f, total_equity: %.2f", at.name, at.initialBalance, totalEquity)
 
 	// 获取持仓计算总保证金
 	positions, err := at.trader.GetPositions()

@@ -10,6 +10,7 @@ import (
 	"nofx/crypto"
 	"nofx/market"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -1086,8 +1087,27 @@ func (d *Database) UpdateTraderCustomPrompt(userID, id string, customPrompt stri
 
 // UpdateTraderInitialBalance 更新交易员初始余额（用于自动同步交易所实际余额）
 func (d *Database) UpdateTraderInitialBalance(userID, id string, newBalance float64) error {
-	_, err := d.db.Exec(`UPDATE traders SET initial_balance = ? WHERE id = ? AND user_id = ?`, newBalance, id, userID)
-	return err
+	// 🚫 严格禁止：为了防止意外覆盖用户设置的初始余额，此函数已被禁用
+	// 只有手动同步API（handleSyncBalance）被允许调用此函数
+	log.Printf("🚫 BLOCKED: UpdateTraderInitialBalance 调用被拒绝 - userID: %s, traderID: %s, newBalance: %.2f", userID, id, newBalance)
+
+	// 获取调用栈信息用于调试
+	pc := make([]uintptr, 15)
+	n := runtime.Callers(2, pc)
+	frames := runtime.CallersFrames(pc[:n])
+	frame, _ := frames.Next()
+	log.Printf("🚫 调用来源: %s:%d %s", frame.File, frame.Line, frame.Function)
+
+	// 检查是否来自于允许的调用路径
+	if strings.Contains(frame.Function, "handleSyncBalance") ||
+	   strings.Contains(frame.File, "server.go") && strings.Contains(frame.Function, "handleSyncBalance") {
+		log.Printf("✅ 允许的手动同步操作")
+		_, err := d.db.Exec(`UPDATE traders SET initial_balance = ? WHERE id = ? AND user_id = ?`, newBalance, id, userID)
+		return err
+	}
+
+	// 拒绝所有其他调用
+	return fmt.Errorf("UpdateTraderInitialBalance 已被禁用，只允许通过手动同步API调用")
 }
 
 // DeleteTrader 删除交易员
