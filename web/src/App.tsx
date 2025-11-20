@@ -146,7 +146,7 @@ function App() {
     }
   )
 
-  const { data: positions, mutate: mutatePositions } = useSWR<Position[]>(
+  const { data: positions } = useSWR<Position[]>(
     currentPage === 'trader' && selectedTraderId
       ? `positions-${selectedTraderId}`
       : null,

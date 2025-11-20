@@ -32,9 +32,14 @@ func NewMySQLDatabase(dsn string) (*Database, error) {
 
 	log.Printf("✅ MySQL数据库连接成功")
 
-	database := &Database{db: db}
+	database := &Database{db: db, isMySQL: true}
 	if err := database.createMySQLTables(); err != nil {
 		return nil, fmt.Errorf("创建MySQL表失败: %w", err)
+	}
+
+	// 执行数据库迁移（必须在创建表之后，初始化数据之前）
+	if err := database.RunMigrations(); err != nil {
+		return nil, fmt.Errorf("执行数据库迁移失败: %w", err)
 	}
 
 	if err := database.initMySQLDefaultData(); err != nil {
@@ -94,6 +99,8 @@ func (d *Database) createMySQLTables() error {
 			aster_user VARCHAR(255) DEFAULT NULL,
 			aster_signer VARCHAR(255) DEFAULT NULL,
 			aster_private_key TEXT DEFAULT NULL,
+			provider VARCHAR(100) DEFAULT '',
+			label VARCHAR(255) DEFAULT '',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 			PRIMARY KEY (id, user_id),
@@ -199,6 +206,15 @@ func (d *Database) createMySQLTables() error {
 
 // initMySQLDefaultData 初始化MySQL默认数据
 func (d *Database) initMySQLDefaultData() error {
+	// 首先确保 default 用户存在（如果不存在则创建）
+	_, err := d.db.Exec(`
+		INSERT IGNORE INTO users (id, email, password_hash, role) 
+		VALUES ('default', 'default@system.local', '', 'system')
+	`)
+	if err != nil {
+		log.Printf("⚠️  创建 default 用户失败（可能已存在）: %v", err)
+	}
+
 	// 初始化AI模型（使用default用户）
 	aiModels := []struct {
 		id, name, provider string
@@ -213,7 +229,8 @@ func (d *Database) initMySQLDefaultData() error {
 			VALUES (?, 'default', ?, ?, 0)
 		`, model.id, model.name, model.provider)
 		if err != nil {
-			return fmt.Errorf("初始化AI模型失败: %w", err)
+			log.Printf("⚠️  初始化AI模型 %s 失败: %v", model.id, err)
+			// 不返回错误，继续初始化其他模型
 		}
 	}
 
@@ -229,11 +246,12 @@ func (d *Database) initMySQLDefaultData() error {
 
 	for _, exchange := range exchanges {
 		_, err := d.db.Exec(`
-			INSERT IGNORE INTO exchanges (id, user_id, name, type, enabled) 
-			VALUES (?, 'default', ?, ?, 0)
-		`, exchange.id, exchange.name, exchange.typ)
+			INSERT IGNORE INTO exchanges (id, user_id, name, type, enabled, provider, label) 
+			VALUES (?, 'default', ?, ?, 0, ?, ?)
+		`, exchange.id, exchange.name, exchange.typ, exchange.id, exchange.name)
 		if err != nil {
-			return fmt.Errorf("初始化交易所失败: %w", err)
+			log.Printf("⚠️  初始化交易所 %s 失败: %v", exchange.id, err)
+			// 不返回错误，继续初始化其他交易所
 		}
 	}
 

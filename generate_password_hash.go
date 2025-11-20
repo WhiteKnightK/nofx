@@ -9,14 +9,14 @@ import (
 
 func main() {
 	password := "#Jzh63111"
-	
+
 	// 使用与系统相同的bcrypt配置（cost=10）
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
 	if err != nil {
 		fmt.Printf("❌ 生成密码哈希失败: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	fmt.Println("╔════════════════════════════════════════════════════════════╗")
 	fmt.Println("║           密码哈希生成工具                                  ║")
 	fmt.Println("╚════════════════════════════════════════════════════════════╝")
@@ -41,4 +41,3 @@ func main() {
 	fmt.Println("   - 每次生成的哈希值都不同（因为包含随机盐值）")
 	fmt.Println("   - 但都能验证同一个密码")
 }
-

@@ -52,4 +52,8 @@ temp/
 # Debug/utility scripts (exclude from main build, but keep migration scripts)
 debug_db.go
 check_user.go
+check_database.go
+decrypt_all.go
+decrypt_tool.go
+generate_password_hash.go
 # Note: scripts/migrate_encryption.go is kept as a utility tool

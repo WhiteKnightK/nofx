@@ -556,6 +556,8 @@ type UpdateExchangeConfigRequest struct {
 		AsterUser             string `json:"aster_user"`
 		AsterSigner           string `json:"aster_signer"`
 		AsterPrivateKey       string `json:"aster_private_key"`
+		Provider              string `json:"provider"`
+		Label                 string `json:"label"`
 	} `json:"exchanges"`
 }
 
@@ -590,8 +592,53 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		}
 	}
 
-	// 生成交易员ID
-	traderID := fmt.Sprintf("%s_%s_%d", req.ExchangeID, req.AIModelID, time.Now().Unix())
+	// 🔑 关键修复：从交易所配置中获取 provider，用于生成交易员ID
+	// 注意：req.ExchangeID 是完整的交易所配置ID（如 bitget_1763638270626）
+	// 但生成交易员ID时应该使用 provider（如 bitget）
+	exchanges, err := s.database.GetExchanges(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取交易所配置失败: %v", err)})
+		return
+	}
+	
+	var exchangeProvider string
+	var exchangeCfg *config.ExchangeConfig
+	for _, exchange := range exchanges {
+		if exchange.ID == req.ExchangeID {
+			exchangeCfg = exchange
+			exchangeProvider = exchange.Provider
+			if exchangeProvider == "" {
+				// 如果 provider 为空，从 ID 推断（兼容旧数据）
+				if strings.HasPrefix(exchange.ID, "binance") {
+					exchangeProvider = "binance"
+				} else if strings.HasPrefix(exchange.ID, "hyperliquid") {
+					exchangeProvider = "hyperliquid"
+				} else if strings.HasPrefix(exchange.ID, "aster") {
+					exchangeProvider = "aster"
+				} else if strings.HasPrefix(exchange.ID, "bitget") {
+					exchangeProvider = "bitget"
+				} else {
+					exchangeProvider = exchange.ID // Fallback
+				}
+			}
+			break
+		}
+	}
+	
+	if exchangeCfg == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("交易所配置不存在: %s", req.ExchangeID)})
+		return
+	}
+	
+	if !exchangeCfg.Enabled {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "交易所未启用"})
+		return
+	}
+
+	// 🔑 使用 provider 生成交易员ID（而不是完整的 ExchangeID）
+	// 格式：{provider}_{AIModelID}_{timestamp}
+	traderID := fmt.Sprintf("%s_%s_%d", exchangeProvider, req.AIModelID, time.Now().Unix())
+	log.Printf("🔍 [handleCreateTrader] 生成交易员ID: ExchangeID=%s, Provider=%s, TraderID=%s", req.ExchangeID, exchangeProvider, traderID)
 
 	// 设置默认值
 	isCrossMargin := true // 默认为全仓模式
@@ -658,9 +705,6 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		}
 		category = req.Category
 	}
-
-	// 定义err变量以供后续使用
-	var err error
 
 	// 创建交易员配置（数据库实体）
 	trader := &config.TraderRecord{
@@ -902,6 +946,13 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 func (s *Server) handleStartTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
+	
+	// 🔍 调试：记录完整的请求信息
+	log.Printf("🔍 [handleStartTrader] 请求详情:")
+	log.Printf("  - URL路径: %s", c.Request.URL.Path)
+	log.Printf("  - 用户ID: %s", userID)
+	log.Printf("  - 交易员ID参数: %s", traderID)
+	log.Printf("  - 交易员ID长度: %d", len(traderID))
 
 	// 获取用户角色
 	user, err := s.database.GetUserByID(userID)
@@ -918,9 +969,18 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 	// 获取交易员信息
 	traderRecord, err := s.database.GetTraderByID(traderID)
 	if err != nil || traderRecord == nil {
+		log.Printf("⚠️ [handleStartTrader] 交易员不存在: ID=%s, 错误=%v", traderID, err)
+		// 🔍 调试：列出用户的所有交易员ID
+		allTraders, _ := s.database.GetTradersByOwnerUserID(userID)
+		log.Printf("🔍 [handleStartTrader] 用户 %s 的所有交易员ID:", userID)
+		for _, t := range allTraders {
+			log.Printf("  - %s (ExchangeID: %s, AIModelID: %s)", t.ID, t.ExchangeID, t.AIModelID)
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
 		return
 	}
+	
+	log.Printf("✅ [handleStartTrader] 找到交易员: ID=%s, ExchangeID=%s, AIModelID=%s", traderRecord.ID, traderRecord.ExchangeID, traderRecord.AIModelID)
 
 	// 权限检查：如果不是admin，验证交易员是否属于当前用户
 	if role != "admin" {
@@ -1455,7 +1515,7 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 
 	// 更新每个交易所的配置
 	for exchangeID, exchangeData := range req.Exchanges {
-		err := s.database.UpdateExchange(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Passphrase, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey)
+		err := s.database.UpdateExchange(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Passphrase, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey, exchangeData.Provider, exchangeData.Label)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新交易所 %s 失败: %v", exchangeID, err)})
 			return

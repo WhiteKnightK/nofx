@@ -255,6 +255,18 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           api.getSupportedModels(),
           api.getSupportedExchanges(),
         ])
+        // 🔍 调试：检查模型配置数据
+        console.log('📦 加载的模型配置数据（原始）:', modelConfigs)
+        console.log('📦 加载的模型配置数据（摘要）:', modelConfigs?.map(m => ({
+          id: m.id,
+          name: m.name,
+          provider: m.provider,
+          apiKey: m.apiKey ? `${m.apiKey.substring(0, 10)}...` : '(空)',
+          apiKeyLength: m.apiKey?.length || 0,
+          enabled: m.enabled,
+          customApiUrl: m.customApiUrl || '(空)',
+          customModelName: m.customModelName || '(空)',
+        })))
         setAllModels(modelConfigs)
         setAllExchanges(exchangeConfigs)
         setSupportedModels(supportedModels)
@@ -291,13 +303,24 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   }, [user, token, canManageCategories])
 
   // 只显示已配置的模型和交易所
-  // 注意：后端返回的数据不包含敏感信息（apiKey等），所以通过其他字段判断是否已配置
+  // 🔑 注意：后端现在会返回 API Key（已解密），所以我们可以通过 enabled 或其他字段判断是否已配置
   const configuredModels =
     allModels?.filter((m) => {
       // 如果模型已启用，说明已配置
       // 或者有自定义API URL，也说明已配置
-      return m.enabled || (m.customApiUrl && m.customApiUrl.trim() !== '')
+      // 或者有 API Key，也说明已配置（新增判断）
+      return m.enabled || (m.customApiUrl && m.customApiUrl.trim() !== '') || (m.apiKey && m.apiKey.trim() !== '')
     }) || []
+  
+  // 🔍 调试：检查 configuredModels 的数据
+  if (configuredModels.length > 0) {
+    console.log('🔍 configuredModels 过滤后的数据:', configuredModels.map(m => ({
+      id: m.id,
+      name: m.name,
+      apiKey: m.apiKey ? `${m.apiKey.substring(0, 20)}...` : '(空)',
+      apiKeyLength: m.apiKey?.length || 0,
+    })))
+  }
   const configuredExchanges =
     allExchanges?.filter((e) => {
       // Aster 交易所检查特殊字段
@@ -714,27 +737,54 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     asterUser?: string,
     asterSigner?: string,
     asterPrivateKey?: string,
-    passphrase?: string
+    passphrase?: string,
+    userLabel?: string
   ) => {
     try {
+      // 尝试解析 Provider (如果 ID 是 binance_123，Provider 是 binance)
+      let provider = exchangeId
+      if (exchangeId.includes('_')) {
+        const parts = exchangeId.split('_')
+        // 假设格式是 provider_suffix
+        provider = parts[0] 
+        // 特殊处理：有些 provider 本身带下划线？目前没有
+      }
+
       // 找到要配置的交易所（从supportedExchanges中）
       const exchangeToUpdate = supportedExchanges?.find(
-        (e) => e.id === exchangeId
+        (e) => e.id === provider || e.id === exchangeId
       )
       if (!exchangeToUpdate) {
         showToast(t('exchangeNotExist', language), 'warning')
         return
       }
 
-      // 创建或更新用户的交易所配置
-      const existingExchange = allExchanges?.find((e) => e.id === exchangeId)
-      let updatedExchanges
+      const trimmedUserLabel = (userLabel || '').trim()
 
-      if (existingExchange) {
-        // 更新现有配置
+      // 🔑 关键修复：检查是否是编辑模式
+      // 只有当 editingExchange 不为 null 时，才是真正的编辑模式
+      const isEditMode = editingExchange !== null
+      
+      // 检查是否已存在相同ID的配置（编辑模式下，查找 editingExchange 对应的记录）
+      const existingExchange = isEditMode 
+        ? allExchanges?.find((e) => e.id === editingExchange)
+        : allExchanges?.find((e) => e.id === exchangeId)
+      
+      let updatedExchanges
+      // 编辑模式下使用 editingExchange 作为最终ID，添加模式下使用 exchangeId（可能会被修改为唯一ID）
+      let finalExchangeId = isEditMode ? (editingExchange || exchangeId) : exchangeId
+      // 默认标签：优先使用用户输入，其次是已有 label，再次是名称
+      let finalLabel =
+        trimmedUserLabel ||
+        (existingExchange as any)?.label ||
+        existingExchange?.name ||
+        exchangeToUpdate.name
+
+      if (isEditMode && existingExchange) {
+        // ✅ 真正的编辑模式：更新现有配置
         updatedExchanges =
           allExchanges?.map((e) =>
-            e.id === exchangeId
+            e.id === finalExchangeId
               ? {
                   ...e,
                   apiKey,
@@ -746,13 +796,29 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                   asterPrivateKey,
                   passphrase,
                   enabled: true,
+                  provider: provider, // 确保 provider 存在
+                  label: (trimmedUserLabel || e.label || e.name) as string, // 优先使用用户输入，其次保持原有标签
                 }
               : e
           ) || []
       } else {
-        // 添加新配置
+        // ✅ 添加新配置模式（即使找到了同名记录，也生成新的唯一ID）
+        // 如果 exchangeId 等于 provider（基础类型，如 "binance"），生成唯一 ID
+        if (exchangeId === provider) {
+          finalExchangeId = `${provider}_${Date.now()}`
+          // 如果用户没有输入自定义标签，则生成默认序号标签
+          if (!trimmedUserLabel) {
+            const index =
+              (allExchanges?.filter((e) =>
+                (e as any).provider === provider || e.id.startsWith(provider)
+              ).length || 0) + 1
+            finalLabel = `${exchangeToUpdate.name} #${index}`
+          }
+        }
+
         const newExchange = {
           ...exchangeToUpdate,
+          id: finalExchangeId,
           apiKey,
           secretKey,
           testnet,
@@ -762,6 +828,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           asterPrivateKey,
           passphrase,
           enabled: true,
+          provider: provider,
+          label: finalLabel,
         }
         updatedExchanges = [...(allExchanges || []), newExchange]
       }
@@ -780,6 +848,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
               aster_user: exchange.asterUser || '',
               aster_signer: exchange.asterSigner || '',
               aster_private_key: exchange.asterPrivateKey || '',
+              provider: (exchange as any).provider || (exchange.id.includes('_') ? exchange.id.split('_')[0] : exchange.id),
+              label: (exchange as any).label || exchange.name
             },
           ])
         ),
@@ -1914,7 +1984,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       {showModelModal && (
         <ModelConfigModal
           allModels={supportedModels}
-          configuredModels={allModels}
+          configuredModels={allModels} // 用户已配置的模型（从后端获取，包含 API Key）
           editingModelId={editingModel}
           onSave={handleSaveModelConfig}
           onDelete={handleDeleteModelConfig}
@@ -1929,7 +1999,8 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       {/* Exchange Configuration Modal */}
       {showExchangeModal && (
         <ExchangeConfigModal
-          allExchanges={supportedExchanges}
+          supportedExchanges={supportedExchanges}
+          configuredExchanges={allExchanges}
           editingExchangeId={editingExchange}
           onSave={handleSaveExchangeConfig}
           onDelete={handleDeleteExchangeConfig}
@@ -2255,16 +2326,16 @@ function SignalSourceModal({
 
 // Model Configuration Modal Component
 function ModelConfigModal({
-  allModels,
-  configuredModels,
+  allModels, // 注意：实际传入的是 supportedModels（系统支持的模型模板）
+  configuredModels, // 注意：实际传入的是 allModels（用户已配置的模型，包含 API Key）
   editingModelId,
   onSave,
   onDelete,
   onClose,
   language,
 }: {
-  allModels: AIModel[]
-  configuredModels: AIModel[]
+  allModels: AIModel[] // 系统支持的模型模板
+  configuredModels: AIModel[] // 用户已配置的模型（包含完整数据，如 API Key）
   editingModelId: string | null
   onSave: (
     modelId: string,
@@ -2281,19 +2352,89 @@ function ModelConfigModal({
   const [baseUrl, setBaseUrl] = useState('')
   const [modelName, setModelName] = useState('')
 
-  // 获取当前编辑的模型信息 - 编辑时从已配置的模型中查找，新建时从所有支持的模型中查找
-  const selectedModel = editingModelId
-    ? configuredModels?.find((m) => m.id === selectedModelId)
-    : allModels?.find((m) => m.id === selectedModelId)
+  // 🔑 关键修复：
+  // - 编辑模式：从 configuredModels（用户已配置的模型）中查找，包含完整数据（API Key）
+  // - 添加模式：从 allModels（系统支持的模型模板）中查找
+  const isEditMode = editingModelId !== null
+  
+  // 🔍 调试：打印传入的数据
+  console.log('🔍 ModelConfigModal 接收的数据:', {
+    editingModelId,
+    isEditMode,
+    configuredModelsCount: configuredModels?.length || 0,
+    configuredModelIds: configuredModels?.map(m => ({ 
+      id: m.id, 
+      apiKey: m.apiKey ? `${m.apiKey.substring(0, 20)}...` : '(空)',
+      apiKeyLength: m.apiKey?.length || 0,
+      customApiUrl: m.customApiUrl || '(空)',
+      customModelName: m.customModelName || '(空)',
+    })) || [],
+    allModelsCount: allModels?.length || 0,
+  })
+  // 🔍 详细打印 configuredModels 的完整数据
+  if (configuredModels && configuredModels.length > 0) {
+    console.log('🔍 configuredModels 完整数据:', configuredModels)
+  }
+  
+  const selectedModel = isEditMode
+    ? configuredModels?.find((m) => m.id === editingModelId) // 编辑模式：从用户已配置的模型中查找（包含 API Key）
+    : allModels?.find((m) => m.id === selectedModelId) // 添加模式：从系统支持的模型模板中查找
 
   // 如果是编辑现有模型，初始化API Key、Base URL和Model Name
   useEffect(() => {
-    if (editingModelId && selectedModel) {
-      setApiKey(selectedModel.apiKey || '')
-      setBaseUrl(selectedModel.customApiUrl || '')
-      setModelName(selectedModel.customModelName || '')
+    console.log('🔄 useEffect 触发:', {
+      editingModelId,
+      configuredModelsCount: configuredModels?.length || 0,
+      configuredModelIds: configuredModels?.map(m => m.id) || [],
+    })
+    
+    if (editingModelId) {
+      // 🔑 编辑模式：从 configuredModels（用户已配置的模型）中查找，包含完整数据（API Key）
+      const modelToEdit = configuredModels?.find((m) => m.id === editingModelId)
+      console.log('🔍 查找结果:', {
+        editingModelId,
+        found: !!modelToEdit,
+        modelData: modelToEdit ? {
+          id: modelToEdit.id,
+          name: modelToEdit.name,
+          provider: modelToEdit.provider,
+          apiKey: modelToEdit.apiKey ? `${modelToEdit.apiKey.substring(0, 20)}...` : '(空)',
+          apiKeyLength: modelToEdit.apiKey?.length || 0,
+          customApiUrl: modelToEdit.customApiUrl || '(空)',
+          customModelName: modelToEdit.customModelName || '(空)',
+        } : null,
+      })
+      
+      if (modelToEdit) {
+        // 🔑 编辑模式：显示所有原有值（包括API Key）
+        console.log('✅ 设置表单值:', {
+          apiKey: modelToEdit.apiKey ? `${modelToEdit.apiKey.substring(0, 20)}...` : '(空)',
+          baseUrl: modelToEdit.customApiUrl || '(空)',
+          modelName: modelToEdit.customModelName || '(空)',
+        })
+        setApiKey(modelToEdit.apiKey || '')
+        setBaseUrl(modelToEdit.customApiUrl || '')
+        setModelName(modelToEdit.customModelName || '')
+        // 确保 selectedModelId 也设置为 editingModelId
+        if (selectedModelId !== editingModelId) {
+          setSelectedModelId(editingModelId)
+        }
+      } else {
+        console.warn('⚠️ 未找到要编辑的模型:', {
+          editingModelId,
+          configuredModelsCount: configuredModels?.length || 0,
+          configuredModelIds: configuredModels?.map(m => m.id) || [],
+          allConfiguredModels: configuredModels,
+        })
+      }
+    } else {
+      // 添加模式下，清空表单
+      console.log('➕ 添加模式，清空表单')
+      setApiKey('')
+      setBaseUrl('')
+      setModelName('')
     }
-  }, [editingModelId, selectedModel])
+  }, [editingModelId, configuredModels, selectedModelId])
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -2410,11 +2551,19 @@ function ModelConfigModal({
                   style={{ color: '#EAECEF' }}
                 >
                   API Key
+                  {editingModelId && (
+                    <span className="text-xs ml-2" style={{ color: '#848E9C' }}>
+                      (长度: {apiKey.length})
+                    </span>
+                  )}
                 </label>
                 <input
-                  type="password"
+                  type="text"
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  onChange={(e) => {
+                    console.log('📝 API Key 输入变化:', e.target.value.substring(0, 20) + '...')
+                    setApiKey(e.target.value)
+                  }}
                   placeholder={t('enterAPIKey', language)}
                   className="w-full px-3 py-2 rounded"
                   style={{
@@ -2424,6 +2573,11 @@ function ModelConfigModal({
                   }}
                   required
                 />
+                {editingModelId && apiKey && (
+                  <div className="text-xs mt-1" style={{ color: '#848E9C' }}>
+                    已加载: {apiKey.substring(0, 30)}...
+                  </div>
+                )}
               </div>
 
               <div>
@@ -2522,14 +2676,16 @@ function ModelConfigModal({
 
 // Exchange Configuration Modal Component
 function ExchangeConfigModal({
-  allExchanges,
+  supportedExchanges,
+  configuredExchanges,
   editingExchangeId,
   onSave,
   onDelete,
   onClose,
   language,
 }: {
-  allExchanges: Exchange[]
+  supportedExchanges: Exchange[] // 系统支持的交易所列表（用于添加时选择类型）
+  configuredExchanges: Exchange[] // 用户已配置的交易所列表（用于编辑时加载数据）
   editingExchangeId: string | null
   onSave: (
     exchangeId: string,
@@ -2540,7 +2696,8 @@ function ExchangeConfigModal({
     asterUser?: string,
     asterSigner?: string,
     asterPrivateKey?: string,
-    passphrase?: string
+    passphrase?: string,
+    label?: string
   ) => Promise<void>
   onDelete: (exchangeId: string) => void
   onClose: () => void
@@ -2572,33 +2729,60 @@ function ExchangeConfigModal({
   // Hyperliquid 特定字段
   const [hyperliquidWalletAddr, setHyperliquidWalletAddr] = useState('')
 
+  // 账号标签（仅在创建时可编辑，编辑模式保持原有标签）
+  const [label, setLabel] = useState('')
+
   // 安全输入状态
   const [secureInputTarget, setSecureInputTarget] = useState<
     null | 'hyperliquid' | 'aster'
   >(null)
 
-  // 获取当前编辑的交易所信息
-  const selectedExchange = allExchanges?.find(
-    (e) => e.id === selectedExchangeId
-  )
+  // 🔑 关键修复：编辑模式下从 configuredExchanges 查找，添加模式下从 supportedExchanges 查找
+  const isEditMode = editingExchangeId !== null
+  const selectedExchange = isEditMode
+    ? configuredExchanges?.find((e) => e.id === editingExchangeId) // 编辑模式：从用户配置中查找
+    : supportedExchanges?.find((e) => e.id === selectedExchangeId) // 添加模式：从系统支持中查找
+  
+  // 获取 provider（用于判断交易所类型）
+  const exchangeProvider = isEditMode && selectedExchange
+    ? (selectedExchange as any).provider || selectedExchange.id.split('_')[0] // 编辑模式：从配置中获取 provider
+    : selectedExchange?.id // 添加模式：使用选择的交易所ID作为provider
 
   // 如果是编辑现有交易所，初始化表单数据
   useEffect(() => {
     if (editingExchangeId && selectedExchange) {
+      // 🔑 编辑模式：显示所有原有值（包括敏感信息）
       setApiKey(selectedExchange.apiKey || '')
       setSecretKey(selectedExchange.secretKey || '')
-      setPassphrase('') // Don't load existing passphrase for security
+      setPassphrase(selectedExchange.passphrase || '') // 显示原有 passphrase
       setTestnet(selectedExchange.testnet || false)
 
       // Aster 字段
       setAsterUser(selectedExchange.asterUser || '')
       setAsterSigner(selectedExchange.asterSigner || '')
-      setAsterPrivateKey('') // Don't load existing private key for security
+      setAsterPrivateKey(selectedExchange.asterPrivateKey || '') // 显示原有 private key
 
       // Hyperliquid 字段
       setHyperliquidWalletAddr(selectedExchange.hyperliquidWalletAddr || '')
+      // 编辑模式下显示当前标签
+      setLabel((selectedExchange as any).label || selectedExchange.name || '')
+      
+      // 编辑模式下，设置 selectedExchangeId 为 provider（用于显示交易所类型）
+      const provider = (selectedExchange as any).provider || selectedExchange.id.split('_')[0]
+      setSelectedExchangeId(provider)
+    } else if (!editingExchangeId) {
+      // 添加模式下，清空表单
+      setApiKey('')
+      setSecretKey('')
+      setPassphrase('')
+      setTestnet(false)
+      setAsterUser('')
+      setAsterSigner('')
+      setAsterPrivateKey('')
+      setHyperliquidWalletAddr('')
+      setLabel('')
     }
-  }, [editingExchangeId, selectedExchange])
+  }, [editingExchangeId, selectedExchange, configuredExchanges])
 
   // 加载服务器IP（当选择binance时）
   useEffect(() => {
@@ -2665,41 +2849,16 @@ function ExchangeConfigModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!selectedExchangeId) return
+    
+    // 🔑 关键修复：编辑模式使用 editingExchangeId，添加模式使用 selectedExchangeId
+    const finalExchangeId = isEditMode ? (editingExchangeId || '') : selectedExchangeId
+    if (!finalExchangeId) return
 
-    // 根据交易所类型验证不同字段
-    if (selectedExchange?.id === 'binance') {
+    // 根据交易所类型验证不同字段（使用 exchangeProvider 判断）
+    if (exchangeProvider === 'binance') {
       if (!apiKey.trim() || !secretKey.trim()) return
-      await onSave(selectedExchangeId, apiKey.trim(), secretKey.trim(), testnet)
-    } else if (selectedExchange?.id === 'hyperliquid') {
-      if (!apiKey.trim() || !hyperliquidWalletAddr.trim()) return // 验证私钥和钱包地址
       await onSave(
-        selectedExchangeId,
-        apiKey.trim(),
-        '',
-        testnet,
-        hyperliquidWalletAddr.trim()
-      )
-    } else if (selectedExchange?.id === 'aster') {
-      if (!asterUser.trim() || !asterSigner.trim() || !asterPrivateKey.trim())
-        return
-      await onSave(
-        selectedExchangeId,
-        '',
-        '',
-        testnet,
-        undefined,
-        asterUser.trim(),
-        asterSigner.trim(),
-        asterPrivateKey.trim()
-      )
-    } else if (
-      selectedExchange?.id === 'okx' ||
-      selectedExchange?.id === 'bitget'
-    ) {
-      if (!apiKey.trim() || !secretKey.trim() || !passphrase.trim()) return
-      await onSave(
-        selectedExchangeId,
+        finalExchangeId,
         apiKey.trim(),
         secretKey.trim(),
         testnet,
@@ -2707,17 +2866,75 @@ function ExchangeConfigModal({
         undefined,
         undefined,
         undefined,
-        passphrase.trim()
+        undefined,
+        label.trim() || undefined
+      )
+    } else if (exchangeProvider === 'hyperliquid') {
+      if (!apiKey.trim() || !hyperliquidWalletAddr.trim()) return // 验证私钥和钱包地址
+      await onSave(
+        finalExchangeId,
+        apiKey.trim(),
+        '',
+        testnet,
+        hyperliquidWalletAddr.trim(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        label.trim() || undefined
+      )
+    } else if (exchangeProvider === 'aster') {
+      if (!asterUser.trim() || !asterSigner.trim() || !asterPrivateKey.trim())
+        return
+      await onSave(
+        finalExchangeId,
+        '',
+        '',
+        testnet,
+        undefined,
+        asterUser.trim(),
+        asterSigner.trim(),
+        asterPrivateKey.trim(),
+        undefined,
+        label.trim() || undefined
+      )
+    } else if (
+      exchangeProvider === 'okx' ||
+      exchangeProvider === 'bitget'
+    ) {
+      if (!apiKey.trim() || !secretKey.trim() || !passphrase.trim()) return
+      await onSave(
+        finalExchangeId,
+        apiKey.trim(),
+        secretKey.trim(),
+        testnet,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        passphrase.trim(),
+        label.trim() || undefined
       )
     } else {
       // 默认情况（其他CEX交易所）
       if (!apiKey.trim() || !secretKey.trim()) return
-      await onSave(selectedExchangeId, apiKey.trim(), secretKey.trim(), testnet)
+      await onSave(
+        finalExchangeId,
+        apiKey.trim(),
+        secretKey.trim(),
+        testnet,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        label.trim() || undefined
+      )
     }
   }
 
-  // 可选择的交易所列表（所有支持的交易所）
-  const availableExchanges = allExchanges || []
+  // 可选择的交易所列表（添加模式用 supportedExchanges，编辑模式显示当前配置）
+  const availableExchanges = isEditMode ? (selectedExchange ? [selectedExchange] : []) : (supportedExchanges || [])
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -2732,7 +2949,7 @@ function ExchangeConfigModal({
               : t('addExchange', language)}
           </h3>
           <div className="flex items-center gap-2">
-            {selectedExchange?.id === 'binance' && (
+            {exchangeProvider === 'binance' && (
               <button
                 type="button"
                 onClick={() => setShowGuide(true)}
@@ -2765,33 +2982,61 @@ function ExchangeConfigModal({
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {!editingExchangeId && (
-            <div>
-              <label
-                className="block text-sm font-semibold mb-2"
-                style={{ color: '#EAECEF' }}
-              >
-                {t('selectExchange', language)}
-              </label>
-              <select
-                value={selectedExchangeId}
-                onChange={(e) => setSelectedExchangeId(e.target.value)}
-                className="w-full px-3 py-2 rounded"
-                style={{
-                  background: '#0B0E11',
-                  border: '1px solid #2B3139',
-                  color: '#EAECEF',
-                }}
-                required
-              >
-                <option value="">{t('pleaseSelectExchange', language)}</option>
-                {availableExchanges.map((exchange) => (
-                  <option key={exchange.id} value={exchange.id}>
-                    {getShortName(exchange.name)} ({exchange.type.toUpperCase()}
-                    )
-                  </option>
-                ))}
-              </select>
-            </div>
+            <>
+              <div>
+                <label
+                  className="block text-sm font-semibold mb-2"
+                  style={{ color: '#EAECEF' }}
+                >
+                  {t('selectExchange', language)}
+                </label>
+                <select
+                  value={selectedExchangeId}
+                  onChange={(e) => setSelectedExchangeId(e.target.value)}
+                  className="w-full px-3 py-2 rounded"
+                  style={{
+                    background: '#0B0E11',
+                    border: '1px solid #2B3139',
+                    color: '#EAECEF',
+                  }}
+                  required
+                >
+                  <option value="">{t('pleaseSelectExchange', language)}</option>
+                  {availableExchanges.map((exchange) => (
+                    <option key={exchange.id} value={exchange.id}>
+                      {getShortName(exchange.name)} ({exchange.type.toUpperCase()}
+                      )
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedExchange && (
+                <div>
+                  <label
+                    className="block text-sm font-semibold mb-1"
+                    style={{ color: '#EAECEF' }}
+                  >
+                    账号标签（可选）
+                  </label>
+                  <input
+                    type="text"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    placeholder={`例如：${getShortName(selectedExchange.name)} 主账号`}
+                    className="w-full px-3 py-2 rounded text-sm"
+                    style={{
+                      background: '#0B0E11',
+                      border: '1px solid #2B3139',
+                      color: '#EAECEF',
+                    }}
+                  />
+                  <p className="mt-1 text-xs" style={{ color: '#848E9C' }}>
+                    用来区分同一交易所的多个账号，例如「Bitget 主账号」「Bitget 副账号」。
+                  </p>
+                </div>
+              )}
+            </>
           )}
 
           {selectedExchange && (
@@ -2801,18 +3046,18 @@ function ExchangeConfigModal({
             >
               <div className="flex items-center gap-3 mb-3">
                 <div className="w-8 h-8 flex items-center justify-center">
-                  {getExchangeIcon(selectedExchange.id, {
+                  {getExchangeIcon(exchangeProvider || selectedExchange.id, {
                     width: 32,
                     height: 32,
                   })}
                 </div>
                 <div>
                   <div className="font-semibold" style={{ color: '#EAECEF' }}>
-                    {getShortName(selectedExchange.name)}
+                    {isEditMode ? ((selectedExchange as any).label || selectedExchange.name) : getShortName(selectedExchange.name)}
                   </div>
                   <div className="text-xs" style={{ color: '#848E9C' }}>
                     {selectedExchange.type.toUpperCase()} •{' '}
-                    {selectedExchange.id}
+                    {isEditMode ? exchangeProvider : selectedExchange.id}
                   </div>
                 </div>
               </div>
@@ -2822,14 +3067,14 @@ function ExchangeConfigModal({
           {selectedExchange && (
             <>
               {/* Binance 和其他 CEX 交易所的字段 */}
-              {(selectedExchange.id === 'binance' ||
-                selectedExchange.id === 'bitget' ||
+              {(exchangeProvider === 'binance' ||
+                exchangeProvider === 'bitget' ||
                 selectedExchange.type === 'cex') &&
-                selectedExchange.id !== 'hyperliquid' &&
-                selectedExchange.id !== 'aster' && (
+                exchangeProvider !== 'hyperliquid' &&
+                exchangeProvider !== 'aster' && (
                   <>
                     {/* 币安用户配置提示 (D1 方案) */}
-                    {selectedExchange.id === 'binance' && (
+                    {exchangeProvider === 'binance' && (
                       <div
                         className="mb-4 p-3 rounded cursor-pointer transition-colors"
                         style={{
@@ -2933,7 +3178,7 @@ function ExchangeConfigModal({
                         {t('apiKey', language)}
                       </label>
                       <input
-                        type="password"
+                        type="text"
                         value={apiKey}
                         onChange={(e) => setApiKey(e.target.value)}
                         placeholder={t('enterAPIKey', language)}
@@ -2955,7 +3200,7 @@ function ExchangeConfigModal({
                         {t('secretKey', language)}
                       </label>
                       <input
-                        type="password"
+                        type="text"
                         value={secretKey}
                         onChange={(e) => setSecretKey(e.target.value)}
                         placeholder={t('enterSecretKey', language)}
@@ -2969,8 +3214,8 @@ function ExchangeConfigModal({
                       />
                     </div>
 
-                    {(selectedExchange.id === 'okx' ||
-                      selectedExchange.id === 'bitget') && (
+                    {(exchangeProvider === 'okx' ||
+                      exchangeProvider === 'bitget') && (
                       <div>
                         <label
                           className="block text-sm font-semibold mb-2"
@@ -2979,7 +3224,7 @@ function ExchangeConfigModal({
                           {t('passphrase', language)}
                         </label>
                         <input
-                          type="password"
+                          type="text"
                           value={passphrase}
                           onChange={(e) => setPassphrase(e.target.value)}
                           placeholder={t('enterPassphrase', language)}
@@ -3091,58 +3336,22 @@ function ExchangeConfigModal({
                     >
                       {t('hyperliquidAgentPrivateKey', language)}
                     </label>
-                    <div className="flex flex-col gap-2">
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={maskSecret(apiKey)}
-                          readOnly
-                          placeholder={t(
-                            'enterHyperliquidAgentPrivateKey',
-                            language
-                          )}
-                          className="w-full px-3 py-2 rounded"
-                          style={{
-                            background: '#0B0E11',
-                            border: '1px solid #2B3139',
-                            color: '#EAECEF',
-                          }}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setSecureInputTarget('hyperliquid')}
-                          className="px-3 py-2 rounded text-xs font-semibold transition-all hover:scale-105"
-                          style={{
-                            background: '#F0B90B',
-                            color: '#000',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {apiKey
-                            ? t('secureInputReenter', language)
-                            : t('secureInputButton', language)}
-                        </button>
-                        {apiKey && (
-                          <button
-                            type="button"
-                            onClick={() => setApiKey('')}
-                            className="px-3 py-2 rounded text-xs font-semibold transition-all hover:scale-105"
-                            style={{
-                              background: '#1B1F2B',
-                              color: '#848E9C',
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            {t('secureInputClear', language)}
-                          </button>
-                        )}
-                      </div>
-                      {apiKey && (
-                        <div className="text-xs" style={{ color: '#848E9C' }}>
-                          {t('secureInputHint', language)}
-                        </div>
+                    <input
+                      type="text"
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder={t(
+                        'enterHyperliquidAgentPrivateKey',
+                        language
                       )}
-                    </div>
+                      className="w-full px-3 py-2 rounded"
+                      style={{
+                        background: '#0B0E11',
+                        border: '1px solid #2B3139',
+                        color: '#EAECEF',
+                      }}
+                      required
+                    />
                     <div className="text-xs mt-1" style={{ color: '#848E9C' }}>
                       {t('hyperliquidAgentPrivateKeyDesc', language)}
                     </div>
@@ -3251,55 +3460,19 @@ function ExchangeConfigModal({
                         />
                       </Tooltip>
                     </label>
-                    <div className="flex flex-col gap-2">
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={maskSecret(asterPrivateKey)}
-                          readOnly
-                          placeholder={t('enterPrivateKey', language)}
-                          className="w-full px-3 py-2 rounded"
-                          style={{
-                            background: '#0B0E11',
-                            border: '1px solid #2B3139',
-                            color: '#EAECEF',
-                          }}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setSecureInputTarget('aster')}
-                          className="px-3 py-2 rounded text-xs font-semibold transition-all hover:scale-105"
-                          style={{
-                            background: '#F0B90B',
-                            color: '#000',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {asterPrivateKey
-                            ? t('secureInputReenter', language)
-                            : t('secureInputButton', language)}
-                        </button>
-                        {asterPrivateKey && (
-                          <button
-                            type="button"
-                            onClick={() => setAsterPrivateKey('')}
-                            className="px-3 py-2 rounded text-xs font-semibold transition-all hover:scale-105"
-                            style={{
-                              background: '#1B1F2B',
-                              color: '#848E9C',
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            {t('secureInputClear', language)}
-                          </button>
-                        )}
-                      </div>
-                      {asterPrivateKey && (
-                        <div className="text-xs" style={{ color: '#848E9C' }}>
-                          {t('secureInputHint', language)}
-                        </div>
-                      )}
-                    </div>
+                    <input
+                      type="text"
+                      value={asterPrivateKey}
+                      onChange={(e) => setAsterPrivateKey(e.target.value)}
+                      placeholder={t('enterPrivateKey', language)}
+                      className="w-full px-3 py-2 rounded"
+                      style={{
+                        background: '#0B0E11',
+                        border: '1px solid #2B3139',
+                        color: '#EAECEF',
+                      }}
+                      required
+                    />
                   </div>
                 </>
               )}
@@ -3363,23 +3536,28 @@ function ExchangeConfigModal({
               type="submit"
               disabled={
                 !selectedExchange ||
-                (selectedExchange.id === 'binance' &&
+                (exchangeProvider === 'binance' &&
                   (!apiKey.trim() || !secretKey.trim())) ||
-                (selectedExchange.id === 'okx' &&
+                (exchangeProvider === 'okx' &&
                   (!apiKey.trim() ||
                     !secretKey.trim() ||
                     !passphrase.trim())) ||
-                (selectedExchange.id === 'hyperliquid' &&
+                (exchangeProvider === 'bitget' &&
+                  (!apiKey.trim() ||
+                    !secretKey.trim() ||
+                    !passphrase.trim())) ||
+                (exchangeProvider === 'hyperliquid' &&
                   (!apiKey.trim() || !hyperliquidWalletAddr.trim())) || // 验证私钥和钱包地址
-                (selectedExchange.id === 'aster' &&
+                (exchangeProvider === 'aster' &&
                   (!asterUser.trim() ||
                     !asterSigner.trim() ||
                     !asterPrivateKey.trim())) ||
                 (selectedExchange.type === 'cex' &&
-                  selectedExchange.id !== 'hyperliquid' &&
-                  selectedExchange.id !== 'aster' &&
-                  selectedExchange.id !== 'binance' &&
-                  selectedExchange.id !== 'okx' &&
+                  exchangeProvider !== 'hyperliquid' &&
+                  exchangeProvider !== 'aster' &&
+                  exchangeProvider !== 'binance' &&
+                  exchangeProvider !== 'okx' &&
+                  exchangeProvider !== 'bitget' &&
                   (!apiKey.trim() || !secretKey.trim()))
               }
               className="flex-1 px-4 py-2 rounded text-sm font-semibold disabled:opacity-50"

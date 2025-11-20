@@ -43,6 +43,10 @@ services:
     restart: unless-stopped
     ports:
       - "${NOFX_FRONTEND_PORT:-3000}:80"
+      - "${NOFX_FRONTEND_HTTPS_PORT:-3443}:443"
+    volumes:
+      - ./ssl:/etc/nginx/ssl:ro  # SSL证书目录
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro  # Nginx配置文件
     networks:
       - nofx-network
     depends_on:

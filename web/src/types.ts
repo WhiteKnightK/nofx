@@ -117,6 +117,10 @@ export interface Exchange {
   secretKey?: string
   passphrase?: string
   testnet?: boolean
+  // 交易所提供商（如 binance、bitget），用于区分交易逻辑
+  provider?: string
+  // 用户自定义标签，用于区分多个账号
+  label?: string
   // Hyperliquid 特定字段
   hyperliquidWalletAddr?: string
   // Aster 特定字段
@@ -167,6 +171,9 @@ export interface UpdateExchangeConfigRequest {
       aster_user?: string
       aster_signer?: string
       aster_private_key?: string
+      // 新增字段：交易所类型和标签（向后兼容，均为可选）
+      provider?: string
+      label?: string
     }
   }
 }
