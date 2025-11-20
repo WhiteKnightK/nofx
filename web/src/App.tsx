@@ -146,7 +146,7 @@ function App() {
     }
   )
 
-  const { data: positions } = useSWR<Position[]>(
+  const { data: positions, mutate: mutatePositions } = useSWR<Position[]>(
     currentPage === 'trader' && selectedTraderId
       ? `positions-${selectedTraderId}`
       : null,
@@ -462,6 +462,43 @@ function TraderDetailsPage({
   lastUpdate: string
   language: Language
 }) {
+  // 平仓状态管理
+  const [closingPosition, setClosingPosition] = useState<string | null>(null)
+
+  // 平仓操作
+  const handleClosePosition = async (pos: Position) => {
+    const confirmMsg = `确认平仓？\n\n交易对: ${pos.symbol}\n方向: ${pos.side === 'long' ? '多' : '空'}仓\n数量: ${pos.quantity}\n未实现盈亏: ${pos.unrealized_pnl.toFixed(2)} USDT (${pos.unrealized_pnl_pct.toFixed(2)}%)`
+    
+    if (!confirm(confirmMsg)) {
+      return
+    }
+
+    const posKey = `${pos.symbol}-${pos.side}`
+    setClosingPosition(posKey)
+
+    try {
+      const response = await api.post(`/api/positions/close?trader_id=${selectedTraderId}`, {
+        symbol: pos.symbol,
+        side: pos.side,
+        quantity: pos.quantity,
+      })
+
+      console.log('平仓成功:', response)
+      
+      // 显示成功消息并提示用户刷新
+      alert(`✅ 平仓成功！\n\n交易对: ${pos.symbol}\n方向: ${pos.side === 'long' ? '多' : '空'}仓\n\n页面将自动刷新以更新持仓列表`)
+      
+      // 刷新页面以更新所有数据
+      window.location.reload()
+    } catch (err: any) {
+      console.error('平仓失败:', err)
+      const errorMsg = err.response?.data?.error || err.message || '平仓失败'
+      alert(`❌ 平仓失败: ${errorMsg}`)
+    } finally {
+      setClosingPosition(null)
+    }
+  }
+
   // If API failed with error, show empty state (likely backend not running)
   if (tradersError) {
     return (
@@ -795,6 +832,9 @@ function TraderDetailsPage({
                       <th className="pb-3 font-semibold text-gray-400">
                         {t('liqPrice', language)}
                       </th>
+                      <th className="pb-3 font-semibold text-gray-400">
+                        操作
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -875,6 +915,25 @@ function TraderDetailsPage({
                           style={{ color: '#848E9C' }}
                         >
                           {pos.liquidation_price.toFixed(4)}
+                        </td>
+                        <td className="py-3">
+                          <button
+                            onClick={() => handleClosePosition(pos)}
+                            disabled={closingPosition === `${pos.symbol}-${pos.side}`}
+                            className="px-3 py-1 rounded text-xs font-bold transition-all"
+                            style={{
+                              background: closingPosition === `${pos.symbol}-${pos.side}` 
+                                ? 'rgba(132, 142, 156, 0.1)' 
+                                : 'rgba(246, 70, 93, 0.1)',
+                              color: closingPosition === `${pos.symbol}-${pos.side}` 
+                                ? '#848E9C' 
+                                : '#F6465D',
+                              border: `1px solid ${closingPosition === `${pos.symbol}-${pos.side}` ? '#848E9C' : '#F6465D'}`,
+                              cursor: closingPosition === `${pos.symbol}-${pos.side}` ? 'not-allowed' : 'pointer',
+                            }}
+                          >
+                            {closingPosition === `${pos.symbol}-${pos.side}` ? '平仓中...' : '平仓'}
+                          </button>
                         </td>
                       </tr>
                     ))}

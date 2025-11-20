@@ -15,7 +15,8 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/go-sql-driver/mysql"
+	_ "modernc.org/sqlite" // 保留以兼容旧代码
 )
 
 // DatabaseInterface 定义了数据库实现需要提供的方法集合
@@ -60,58 +61,110 @@ type Database struct {
 }
 
 // NewDatabase 创建配置数据库
+// dbPath可以是SQLite文件路径，也可以是MySQL连接字符串
+// MySQL连接字符串格式: user:password@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local
+// 如果dbPath包含"@tcp("则认为是MySQL连接，否则认为是SQLite文件路径
 func NewDatabase(dbPath string) (*Database, error) {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("打开数据库失败: %w", err)
+	var db *sql.DB
+	var err error
+	var isMySQL bool
+
+	// 判断是MySQL还是SQLite
+	if strings.Contains(dbPath, "@tcp(") {
+		// MySQL连接
+		isMySQL = true
+		db, err = sql.Open("mysql", dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("打开MySQL数据库失败: %w", err)
+		}
+		// 设置MySQL连接池参数
+		db.SetMaxOpenConns(25)
+		db.SetMaxIdleConns(5)
+		db.SetConnMaxLifetime(5 * time.Minute)
+		log.Printf("✅ 使用MySQL数据库连接")
+	} else {
+		// SQLite连接（向后兼容）
+		isMySQL = false
+		db, err = sql.Open("sqlite", dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("打开SQLite数据库失败: %w", err)
+		}
+
+		// 🔒 启用 WAL 模式,提高并发性能和崩溃恢复能力
+		// WAL (Write-Ahead Logging) 模式的优势:
+		// 1. 更好的并发性能:读操作不会被写操作阻塞
+		// 2. 崩溃安全:即使在断电或强制终止时也能保证数据完整性
+		// 3. 更快的写入:不需要每次都写入主数据库文件
+		if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("启用WAL模式失败: %w", err)
+		}
+
+		// 🔒 设置 synchronous=FULL 确保数据持久性
+		// FULL (2) 模式: 确保数据在关键时刻完全写入磁盘
+		// 配合 WAL 模式,在保证数据安全的同时获得良好性能
+		if _, err := db.Exec("PRAGMA synchronous=FULL"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("设置synchronous失败: %w", err)
+		}
+		log.Printf("✅ 使用SQLite数据库，已启用 WAL 模式和 FULL 同步")
 	}
 
-	// 🔒 启用 WAL 模式,提高并发性能和崩溃恢复能力
-	// WAL (Write-Ahead Logging) 模式的优势:
-	// 1. 更好的并发性能:读操作不会被写操作阻塞
-	// 2. 崩溃安全:即使在断电或强制终止时也能保证数据完整性
-	// 3. 更快的写入:不需要每次都写入主数据库文件
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	// 测试数据库连接
+	if err := db.Ping(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("启用WAL模式失败: %w", err)
-	}
-
-	// 🔒 设置 synchronous=FULL 确保数据持久性
-	// FULL (2) 模式: 确保数据在关键时刻完全写入磁盘
-	// 配合 WAL 模式,在保证数据安全的同时获得良好性能
-	if _, err := db.Exec("PRAGMA synchronous=FULL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("设置synchronous失败: %w", err)
+		return nil, fmt.Errorf("数据库连接测试失败: %w", err)
 	}
 
 	database := &Database{db: db}
-	if err := database.createTables(); err != nil {
+	if err := database.createTables(isMySQL); err != nil {
 		return nil, fmt.Errorf("创建表失败: %w", err)
 	}
 
-	if err := database.initDefaultData(); err != nil {
+	if err := database.initDefaultData(isMySQL); err != nil {
 		return nil, fmt.Errorf("初始化默认数据失败: %w", err)
 	}
 
-	log.Printf("✅ 数据库已启用 WAL 模式和 FULL 同步,数据持久性得到保证")
 	return database, nil
 }
 
 // createTables 创建数据库表
-func (d *Database) createTables() error {
+func (d *Database) createTables(isMySQL bool) error {
+	// 根据数据库类型选择合适的数据类型和语法
+	var (
+		textType     string
+		boolType     string
+		datetimeFunc string
+	)
+
+	if isMySQL {
+		textType = "VARCHAR(255)"
+		boolType = "TINYINT(1)"
+		datetimeFunc = "CURRENT_TIMESTAMP"
+	} else {
+		textType = "TEXT"
+		boolType = "BOOLEAN"
+		datetimeFunc = "CURRENT_TIMESTAMP"
+	}
+
 	queries := []string{
 		// AI模型配置表
-		`CREATE TABLE IF NOT EXISTS ai_models (
-			id TEXT PRIMARY KEY,
-			user_id TEXT NOT NULL DEFAULT 'default',
-			name TEXT NOT NULL,
-			provider TEXT NOT NULL,
-			enabled BOOLEAN DEFAULT 0,
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS ai_models (
+			id %s PRIMARY KEY,
+			user_id %s NOT NULL DEFAULT 'default',
+			name %s NOT NULL,
+			provider %s NOT NULL,
+			enabled %s DEFAULT 0,
 			api_key TEXT DEFAULT '',
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			created_at DATETIME DEFAULT %s,
+			updated_at DATETIME DEFAULT %s%s
 			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-		)`,
+		)`, textType, textType, textType, textType, boolType, datetimeFunc, datetimeFunc, func() string {
+			if isMySQL {
+				return ",\n\t\t\t"
+			}
+			return ",\n\t\t\t"
+		}()),
 
 		// 交易所配置表
 		`CREATE TABLE IF NOT EXISTS exchanges (
@@ -325,7 +378,7 @@ func (d *Database) createTables() error {
 }
 
 // initDefaultData 初始化默认数据
-func (d *Database) initDefaultData() error {
+func (d *Database) initDefaultData(isMySQL bool) error {
 	// 初始化AI模型（使用default用户）
 	aiModels := []struct {
 		id, name, provider string
@@ -334,11 +387,17 @@ func (d *Database) initDefaultData() error {
 		{"qwen", "Qwen", "qwen"},
 	}
 
+	// 根据数据库类型选择INSERT语法
+	insertIgnore := "INSERT OR IGNORE"
+	if isMySQL {
+		insertIgnore = "INSERT IGNORE"
+	}
+
 	for _, model := range aiModels {
-		_, err := d.db.Exec(`
-			INSERT OR IGNORE INTO ai_models (id, user_id, name, provider, enabled) 
+		_, err := d.db.Exec(fmt.Sprintf(`
+			%s INTO ai_models (id, user_id, name, provider, enabled) 
 			VALUES (?, 'default', ?, ?, 0)
-		`, model.id, model.name, model.provider)
+		`, insertIgnore), model.id, model.name, model.provider)
 		if err != nil {
 			return fmt.Errorf("初始化AI模型失败: %w", err)
 		}
@@ -355,10 +414,10 @@ func (d *Database) initDefaultData() error {
 	}
 
 	for _, exchange := range exchanges {
-		_, err := d.db.Exec(`
-			INSERT OR IGNORE INTO exchanges (id, user_id, name, type, enabled) 
+		_, err := d.db.Exec(fmt.Sprintf(`
+			%s INTO exchanges (id, user_id, name, type, enabled) 
 			VALUES (?, 'default', ?, ?, 0)
-		`, exchange.id, exchange.name, exchange.typ)
+		`, insertIgnore), exchange.id, exchange.name, exchange.typ)
 		if err != nil {
 			return fmt.Errorf("初始化交易所失败: %w", err)
 		}
@@ -379,10 +438,10 @@ func (d *Database) initDefaultData() error {
 	}
 
 	for key, value := range systemConfigs {
-		_, err := d.db.Exec(`
-			INSERT OR IGNORE INTO system_config (key, value) 
+		_, err := d.db.Exec(fmt.Sprintf(`
+			%s INTO system_config (`+"`key`"+`, value) 
 			VALUES (?, ?)
-		`, key, value)
+		`, insertIgnore), key, value)
 		if err != nil {
 			return fmt.Errorf("初始化系统配置失败: %w", err)
 		}
@@ -776,7 +835,7 @@ func (d *Database) UpdateAIModel(userID, id string, enabled bool, apiKey, custom
 
 	if err == nil {
 		// 找到了现有配置（通过 provider 匹配，兼容旧版），更新它
-		log.Printf("⚠️  使用旧版 provider 匹配更新模型: %s -> %s", provider, existingID)
+		log.Printf("✓ 通过 provider 匹配更新模型: %s -> %s（建议前端使用完整ID）", provider, existingID)
 		encryptedAPIKey := d.encryptSensitiveData(apiKey)
 		_, err = d.db.Exec(`
 			UPDATE ai_models SET enabled = ?, api_key = ?, custom_api_url = ?, custom_model_name = ?, updated_at = datetime('now')
@@ -1205,9 +1264,22 @@ func (d *Database) GetSystemConfig(key string) (string, error) {
 
 // SetSystemConfig 设置系统配置
 func (d *Database) SetSystemConfig(key, value string) error {
+	// 尝试MySQL语法（ON DUPLICATE KEY UPDATE）
 	_, err := d.db.Exec(`
-		INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)
+		INSERT INTO system_config (`+"`key`"+`, value, updated_at) 
+		VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON DUPLICATE KEY UPDATE 
+			value = VALUES(value), 
+			updated_at = CURRENT_TIMESTAMP
 	`, key, value)
+
+	// 如果失败，可能是SQLite，尝试SQLite语法
+	if err != nil {
+		_, err = d.db.Exec(`
+			INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)
+		`, key, value)
+	}
+
 	return err
 }
 
@@ -1415,11 +1487,14 @@ func (d *Database) decryptSensitiveData(encrypted string) string {
 	decrypted, err := d.cryptoService.DecryptFromStorage(encrypted)
 	if err != nil {
 		log.Printf("⚠️ 解密失败: %v", err)
-		return encrypted // 返回加密文本作为降级处理
+		// 🔴 CRITICAL FIX: 解密失败时返回空字符串，不要返回加密文本
+		// 这样可以防止加密格式的文本被当作API密钥使用
+		return ""
 	}
 
 	return decrypted
 }
+
 // migrateUserRoles 数据迁移：设置现有用户的role字段
 func (d *Database) migrateUserRoles() {
 	_, err := d.db.Exec(`UPDATE users SET role = 'user' WHERE role IS NULL OR role = ''`)
@@ -1937,4 +2012,3 @@ func (d *Database) DeleteGroupLeaderCategories(groupLeaderID string) error {
 	_, err := d.db.Exec(`DELETE FROM group_leader_categories WHERE group_leader_id = ?`, groupLeaderID)
 	return err
 }
-

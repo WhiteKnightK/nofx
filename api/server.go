@@ -181,6 +181,7 @@ func (s *Server) setupRoutes() {
 			protected.GET("/status", s.handleStatus)
 			protected.GET("/account", s.handleAccount)
 			protected.GET("/positions", s.handlePositions)
+			protected.POST("/positions/close", s.handleClosePosition) // 平仓操作
 			protected.GET("/decisions", s.handleDecisions)
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
 			protected.GET("/statistics", s.handleStatistics)
@@ -1882,6 +1883,55 @@ func (s *Server) handlePositions(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, positions)
+}
+
+// handleClosePosition 平仓操作
+func (s *Server) handleClosePosition(c *gin.Context) {
+	_, traderID, err := s.getTraderFromQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req struct {
+		Symbol   string  `json:"symbol" binding:"required"`   // 交易对，如 BTCUSDT
+		Side     string  `json:"side" binding:"required"`     // long 或 short
+		Quantity float64 `json:"quantity" binding:"required"` // 平仓数量
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("参数错误: %v", err)})
+		return
+	}
+
+	trader, err := s.traderManager.GetTrader(traderID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 根据持仓方向调用对应的平仓方法
+	var result map[string]interface{}
+	if req.Side == "long" {
+		result, err = trader.CloseLong(req.Symbol, req.Quantity)
+	} else if req.Side == "short" {
+		result, err = trader.CloseShort(req.Symbol, req.Quantity)
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "side 必须是 long 或 short"})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": fmt.Sprintf("平仓失败: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "平仓成功",
+		"result":  result,
+	})
 }
 
 // handleDecisions 决策日志列表

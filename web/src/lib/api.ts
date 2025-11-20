@@ -32,6 +32,25 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 export const api = {
+  // 通用方法
+  async get(url: string): Promise<any> {
+    const res = await httpClient.get(url, getAuthHeaders())
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}))
+      throw new Error(errorData.error || 'Request failed')
+    }
+    return res.json()
+  },
+
+  async post(url: string, body?: any): Promise<any> {
+    const res = await httpClient.post(url, body, getAuthHeaders())
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}))
+      throw new Error(errorData.error || 'Request failed')
+    }
+    return res.json()
+  },
+
   // AI交易员管理接口
   async getTraders(): Promise<TraderInfo[]> {
     const res = await httpClient.get(`${API_BASE}/my-traders`, getAuthHeaders())

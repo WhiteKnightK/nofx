@@ -558,7 +558,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       buildRequest: (models) => ({
         models: Object.fromEntries(
           models.map((model) => [
-            model.provider,
+            model.id, // 使用完整的 id（格式: userID_provider）
             {
               enabled: model.enabled,
               api_key: model.apiKey || '',
@@ -630,7 +630,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       const request = {
         models: Object.fromEntries(
           updatedModels.map((model) => [
-            model.provider, // 使用 provider 而不是 id
+            model.id, // 使用完整的 id（格式: userID_provider）
             {
               enabled: model.enabled,
               api_key: model.apiKey || '',
@@ -2539,7 +2539,8 @@ function ExchangeConfigModal({
     hyperliquidWalletAddr?: string,
     asterUser?: string,
     asterSigner?: string,
-    asterPrivateKey?: string
+    asterPrivateKey?: string,
+    passphrase?: string
   ) => Promise<void>
   onDelete: (exchangeId: string) => void
   onClose: () => void

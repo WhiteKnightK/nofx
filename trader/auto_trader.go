@@ -115,6 +115,21 @@ type AutoTrader struct {
 	userID                string             // 用户ID
 }
 
+// GetTrader 获取底层交易器接口（用于直接调用交易方法）
+func (at *AutoTrader) GetTrader() Trader {
+	return at.trader
+}
+
+// CloseLong 平多仓（代理方法）
+func (at *AutoTrader) CloseLong(symbol string, quantity float64) (map[string]interface{}, error) {
+	return at.trader.CloseLong(symbol, quantity)
+}
+
+// CloseShort 平空仓（代理方法）
+func (at *AutoTrader) CloseShort(symbol string, quantity float64) (map[string]interface{}, error) {
+	return at.trader.CloseShort(symbol, quantity)
+}
+
 // NewAutoTrader 创建自动交易器
 func NewAutoTrader(config AutoTraderConfig, database interface{}, userID string) (*AutoTrader, error) {
 	// 设置默认值

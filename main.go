@@ -160,22 +160,49 @@ func main() {
 	// In Docker Compose, variables are injected by the runtime and this is harmless.
 	_ = godotenv.Load()
 
-	// 初始化数据库配置
-	dbPath := "config.db"
-	if len(os.Args) > 1 {
-		dbPath = os.Args[1]
-	}
-
 	// 读取配置文件
 	configFile, err := loadConfigFile()
 	if err != nil {
 		log.Fatalf("❌ 读取config.json失败: %v", err)
 	}
 
-	log.Printf("📋 初始化配置数据库: %s", dbPath)
-	database, err := config.NewDatabase(dbPath)
-	if err != nil {
-		log.Fatalf("❌ 初始化数据库失败: %v", err)
+	// 初始化数据库配置 - 优先使用MySQL
+	var database *config.Database
+
+	// 检查是否配置了MySQL环境变量（优先检查单独的环境变量）
+	dbHost := os.Getenv("DB_HOST")
+	dbUser := os.Getenv("DB_USER")
+	dbPassword := os.Getenv("DB_PASSWORD")
+	databaseURL := os.Getenv("DATABASE_URL")
+
+	// 如果配置了MySQL环境变量，使用MySQL
+	if (dbHost != "" && dbUser != "" && dbPassword != "") || databaseURL != "" {
+		log.Printf("📋 使用MySQL数据库连接")
+		mysqlDSN := config.GetDatabaseDSNFromEnv()
+		database, err = config.NewMySQLDatabase(mysqlDSN)
+		if err != nil {
+			log.Fatalf("❌ 初始化MySQL数据库失败: %v", err)
+		}
+
+		// 🔄 自动从SQLite迁移数据到MySQL（如果SQLite文件存在）
+		sqlitePath := "config.db"
+		if len(os.Args) > 1 {
+			sqlitePath = os.Args[1]
+		}
+		if err := config.MigrateSQLiteToMySQL(database, sqlitePath); err != nil {
+			log.Printf("⚠️  数据迁移失败: %v", err)
+		}
+	} else {
+		// 否则使用SQLite（向后兼容）
+		dbPath := "config.db"
+		if len(os.Args) > 1 {
+			dbPath = os.Args[1]
+		}
+		log.Printf("📋 使用SQLite数据库: %s", dbPath)
+		database, err = config.NewDatabase(dbPath)
+		if err != nil {
+			log.Fatalf("❌ 初始化SQLite数据库失败: %v", err)
+		}
 	}
 	defer database.Close()
 

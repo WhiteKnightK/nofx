@@ -16,10 +16,18 @@ ARG TA_LIB_VERSION=0.4.0
 FROM alpine:${ALPINE_VERSION} AS ta-lib-builder
 ARG TA_LIB_VERSION
 
+# 配置国内镜像源（如果官方源超时，自动使用镜像源）
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories || true
+
 RUN apk update && apk add --no-cache \
     wget tar make gcc g++ musl-dev autoconf automake
 
-RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
+# 下载 TA-Lib 源代码（带超时和重试机制，优先使用 HTTPS）
+RUN wget --timeout=60 --tries=5 --retry-connrefused --no-check-certificate \
+    https://sourceforge.net/projects/ta-lib/files/ta-lib/0.4.0/ta-lib-${TA_LIB_VERSION}-src.tar.gz/download \
+    -O ta-lib-${TA_LIB_VERSION}-src.tar.gz || \
+    wget --timeout=60 --tries=5 --retry-connrefused \
+    http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
     tar -xzf ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
     cd ta-lib && \
     if [ "$(uname -m)" = "aarch64" ]; then \
@@ -38,12 +46,22 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.
 # ──────────────────────────────────────────────────────────────
 FROM golang:${GO_VERSION} AS backend-builder
 
+# 配置国内镜像源（如果官方源超时，自动使用镜像源）
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories || true
+
 RUN apk update && apk add --no-cache git make gcc g++ musl-dev
 
 COPY --from=ta-lib-builder /usr/local /usr/local
 
 WORKDIR /app
 COPY go.mod go.sum ./
+
+# 配置 Go 代理镜像（加速依赖下载，使用多个国内镜像源）
+ENV GOPROXY=https://goproxy.cn,https://goproxy.io,https://mirrors.aliyun.com/goproxy/,direct
+ENV GOSUMDB=sum.golang.google.cn
+ENV GONOPROXY=
+ENV GONOSUMDB=
+
 RUN go mod download
 
 COPY . .
@@ -55,6 +73,9 @@ RUN CGO_ENABLED=1 GOOS=linux \
 # Runtime Stage (Minimal Executable Environment)
 # ──────────────────────────────────────────────────────────────
 FROM alpine:${ALPINE_VERSION}
+
+# 配置国内镜像源（如果官方源超时，自动使用镜像源）
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories || true
 
 RUN apk update && apk add --no-cache ca-certificates tzdata
 

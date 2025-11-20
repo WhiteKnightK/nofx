@@ -48,3 +48,8 @@ web/dist/
 tmp/
 temp/
 *.tmp
+
+# Debug/utility scripts (exclude from main build, but keep migration scripts)
+debug_db.go
+check_user.go
+# Note: scripts/migrate_encryption.go is kept as a utility tool
