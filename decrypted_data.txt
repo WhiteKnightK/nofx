@@ -1,0 +1,44 @@
+╔════════════════════════════════════════════════════════════╗
+║           加密数据解密工具                                   ║
+╚════════════════════════════════════════════════════════════╝
+
+📋 已加载 .env 文件
+📁 数据库文件: config.db
+   文件大小: 124.00 KB
+
+🔐 初始化加密服务...
+✅ 加密服务初始化成功
+
+🏦 读取交易所配置...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+交易所: Binance Futures (ID: binance, User: 1ac99949-b962-4cb7-a13d-c71b23890889)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 API Key (加密): cNpZGE5kH6c14KANrILXGOhOAkQVTpuUgwUKYaDjL6Mw53DAsN...
+   ℹ️  API Key (明文): cNpZGE5kH6c14KANrILXGOhOAkQVTpuUgwUKYaDjL6Mw53DAsNlU5jDNEl0EfDml
+📌 Secret Key (加密): pgp3oo2xp54dDPrGRML5C7HrMSR5TvbUE1D07dlehSyM1p1iMT...
+   ℹ️  Secret Key (明文): pgp3oo2xp54dDPrGRML5C7HrMSR5TvbUE1D07dlehSyM1p1iMT0b23ygcAV5RFQ6
+📌 Passphrase (加密): 0
+   ℹ️  Passphrase (明文): 0
+📌 Aster Private Key (加密): 2025-11-09 18:13:14
+   ℹ️  Aster Private Key (明文): 2025-11-09 18:13:14
+
+🤖 读取AI模型配置...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AI模型: DeepSeek (ID: 1ac99949-b962-4cb7-a13d-c71b23890889_deepseek, User: 1ac99949-b962-4cb7-a13d-c71b23890889)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 API Key (加密): ENC:v1:w5G3qWJ12pAD9ivu:xV4JR+Gz328KTGABMOYZgOr+YC...
+   ❌ 解密失败: decryption failed: cipher: message authentication failed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AI模型: DeepSeek (ID: cf02e58e-f159-4bef-b08f-6b8af520e7ae_deepseek, User: cf02e58e-f159-4bef-b08f-6b8af520e7ae)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 API Key (加密): ENC:v1:NvLQHfGyCRmeCVvi:4QmdWwMZyl/DFbwobpoh5Z8968...
+   ❌ 解密失败: decryption failed: cipher: message authentication failed
+
+
+✅ 解密完成！
+
+💡 提示:
+   1. 请记录上面显示的明文密钥
+   2. 在Web界面重新输入这些密钥
+   3. 或者检查secrets/rsa_key是否与服务器上的一致

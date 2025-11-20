@@ -1,0 +1,146 @@
+╔════════════════════════════════════════════════════════════╗
+║        完整数据库解密工具 - 包含所有用户                     ║
+╚════════════════════════════════════════════════════════════╝
+
+📁 数据库文件: config.db
+   文件大小: 124.00 KB
+
+🔐 初始化加密服务...
+✅ 已加载 DATA_ENCRYPTION_KEY (长度: 44)
+✅ 加密服务初始化成功
+
+👥 读取所有用户...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Email: jiangze9311@gmail.com
+   用户ID: 1ac99949-b962-4cb7-a13d-c71b23890889
+   角色: user
+
+2. Email: 630257814@qq.com
+   用户ID: cf02e58e-f159-4bef-b08f-6b8af520e7ae
+   角色: user
+
+✅ 找到 2 个用户
+
+🏦 读取所有交易所配置...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【交易所 #1】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+名称: Binance Futures (cex)
+用户: jiangze9311@gmail.com
+用户ID: 1ac99949-b962-4cb7-a13d-c71b23890889
+交易所ID: binance
+启用状态: true
+测试网: false
+
+📌 API Key:
+   原始数据: cNpZGE5kH6c14KANrILXGOhOAkQVTpuUgwUKYaDjL6Mw53DAsNlU5jDNEl0EfDml
+   ⚠️  可能是明文或解密失败: cNpZGE5kH6c14KANrILXGOhOAkQVTpuUgwUKYaDjL6Mw53DAsNlU5jDNEl0EfDml
+
+📌 Secret Key:
+   原始数据: pgp3oo2xp54dDPrGRML5C7HrMSR5TvbUE1D07dlehSyM1p1iMT0b23ygcAV5RFQ6
+   ⚠️  可能是明文或解密失败: pgp3oo2xp54dDPrGRML5C7HrMSR5TvbUE1D07dlehSyM1p1iMT0b23ygcAV5RFQ6
+
+📌 Aster Private Key:
+   原始数据: 2025-11-09 18:13:14
+   ⚠️  可能是明文: 2025-11-09 18:13:14
+
+
+【交易所 #2】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+名称: Binance Futures (cex)
+用户: 630257814@qq.com
+用户ID: cf02e58e-f159-4bef-b08f-6b8af520e7ae
+交易所ID: binance
+启用状态: true
+测试网: false
+
+
+【交易所 #3】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+名称: Aster DEX (aster)
+用户: 未知用户
+用户ID: default
+交易所ID: aster
+启用状态: false
+测试网: false
+
+📌 Aster Private Key:
+   原始数据: 2025-11-09 18:02:27
+   ⚠️  可能是明文: 2025-11-09 18:02:27
+
+
+【交易所 #4】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+名称: Binance Futures (binance)
+用户: 未知用户
+用户ID: default
+交易所ID: binance
+启用状态: false
+测试网: false
+
+📌 Aster Private Key:
+   原始数据: 2025-11-09 18:02:27
+   ⚠️  可能是明文: 2025-11-09 18:02:27
+
+
+【交易所 #5】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+名称: Bitget Futures (bitget)
+用户: 未知用户
+用户ID: default
+交易所ID: bitget
+启用状态: false
+测试网: false
+
+
+【交易所 #6】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+名称: Hyperliquid (hyperliquid)
+用户: 未知用户
+用户ID: default
+交易所ID: hyperliquid
+启用状态: false
+测试网: false
+
+📌 Aster Private Key:
+   原始数据: 2025-11-09 18:02:27
+   ⚠️  可能是明文: 2025-11-09 18:02:27
+
+
+✅ 共找到 6 个交易所配置
+
+🤖 读取所有AI模型配置...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【AI模型 #1】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+名称: DeepSeek (deepseek)
+用户: jiangze9311@gmail.com
+用户ID: 1ac99949-b962-4cb7-a13d-c71b23890889
+AI模型ID: 1ac99949-b962-4cb7-a13d-c71b23890889_deepseek
+启用状态: true
+
+📌 API Key:
+   原始数据: ENC:v1:w5G3qWJ12pAD9ivu:xV4JR+Gz328KTGABMOYZgOr+YCPe/mZMV1fJfxcdxfHnQz...
+   ✅ 解密成功: [解密失败: decryption failed: cipher: message authentication failed]
+
+
+【AI模型 #2】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+名称: DeepSeek (deepseek)
+用户: 630257814@qq.com
+用户ID: cf02e58e-f159-4bef-b08f-6b8af520e7ae
+AI模型ID: cf02e58e-f159-4bef-b08f-6b8af520e7ae_deepseek
+启用状态: true
+
+📌 API Key:
+   原始数据: ENC:v1:NvLQHfGyCRmeCVvi:4QmdWwMZyl/DFbwobpoh5Z8968U7gGv4PSmXdYSQDmO5Ye...
+   ✅ 解密成功: [解密失败: decryption failed: cipher: message authentication failed]
+
+
+✅ 共找到 2 个AI模型配置
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ 解密完成！
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
