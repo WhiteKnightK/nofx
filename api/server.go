@@ -600,7 +600,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取交易所配置失败: %v", err)})
 		return
 	}
-	
+
 	var exchangeProvider string
 	var exchangeCfg *config.ExchangeConfig
 	for _, exchange := range exchanges {
@@ -624,12 +624,12 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 			break
 		}
 	}
-	
+
 	if exchangeCfg == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("交易所配置不存在: %s", req.ExchangeID)})
 		return
 	}
-	
+
 	if !exchangeCfg.Enabled {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "交易所未启用"})
 		return
@@ -946,7 +946,7 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 func (s *Server) handleStartTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
-	
+
 	// 🔍 调试：记录完整的请求信息
 	log.Printf("🔍 [handleStartTrader] 请求详情:")
 	log.Printf("  - URL路径: %s", c.Request.URL.Path)
@@ -979,7 +979,7 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
 		return
 	}
-	
+
 	log.Printf("✅ [handleStartTrader] 找到交易员: ID=%s, ExchangeID=%s, AIModelID=%s", traderRecord.ID, traderRecord.ExchangeID, traderRecord.AIModelID)
 
 	// 权限检查：如果不是admin，验证交易员是否属于当前用户
@@ -1515,7 +1515,21 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 
 	// 更新每个交易所的配置
 	for exchangeID, exchangeData := range req.Exchanges {
-		err := s.database.UpdateExchange(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Passphrase, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey, exchangeData.Provider, exchangeData.Label)
+		err := s.database.UpdateExchange(
+			userID,
+			exchangeID,
+			exchangeData.Enabled,
+			exchangeData.APIKey,
+			exchangeData.SecretKey,
+			exchangeData.Passphrase,
+			exchangeData.Testnet,
+			exchangeData.HyperliquidWalletAddr,
+			exchangeData.AsterUser,
+			exchangeData.AsterSigner,
+			exchangeData.AsterPrivateKey,
+			exchangeData.Provider,
+			exchangeData.Label,
+		)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新交易所 %s 失败: %v", exchangeID, err)})
 			return

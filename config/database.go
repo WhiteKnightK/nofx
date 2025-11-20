@@ -32,7 +32,7 @@ type DatabaseInterface interface {
 	GetExchanges(userID string) ([]*ExchangeConfig, error)
 	UpdateExchange(userID, id string, enabled bool, apiKey, secretKey, passphrase string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey, provider, label string) error
 	CreateAIModel(userID, id, name, provider string, enabled bool, apiKey, customAPIURL string) error
-	CreateExchange(userID, id, name, typ string, enabled bool, apiKey, secretKey string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey, provider, label string) error
+	CreateExchange(userID, id, name, typ string, enabled bool, apiKey, secretKey string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string) error
 	CreateTrader(trader *TraderRecord) error
 	GetTraders(userID string) ([]*TraderRecord, error)
 	UpdateTraderStatus(userID, id string, isRunning bool) error
@@ -83,7 +83,7 @@ func NewDatabase(dbPath string) (*Database, error) {
 		// MySQL连接
 		isMySQL = true
 		db, err = sql.Open("mysql", dbPath)
-	if err != nil {
+		if err != nil {
 			return nil, fmt.Errorf("打开MySQL数据库失败: %w", err)
 		}
 		// 设置MySQL连接池参数
@@ -97,25 +97,25 @@ func NewDatabase(dbPath string) (*Database, error) {
 		db, err = sql.Open("sqlite", dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("打开SQLite数据库失败: %w", err)
-	}
+		}
 
-	// 🔒 启用 WAL 模式,提高并发性能和崩溃恢复能力
-	// WAL (Write-Ahead Logging) 模式的优势:
-	// 1. 更好的并发性能:读操作不会被写操作阻塞
-	// 2. 崩溃安全:即使在断电或强制终止时也能保证数据完整性
-	// 3. 更快的写入:不需要每次都写入主数据库文件
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("启用WAL模式失败: %w", err)
-	}
+		// 🔒 启用 WAL 模式,提高并发性能和崩溃恢复能力
+		// WAL (Write-Ahead Logging) 模式的优势:
+		// 1. 更好的并发性能:读操作不会被写操作阻塞
+		// 2. 崩溃安全:即使在断电或强制终止时也能保证数据完整性
+		// 3. 更快的写入:不需要每次都写入主数据库文件
+		if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("启用WAL模式失败: %w", err)
+		}
 
-	// 🔒 设置 synchronous=FULL 确保数据持久性
-	// FULL (2) 模式: 确保数据在关键时刻完全写入磁盘
-	// 配合 WAL 模式,在保证数据安全的同时获得良好性能
-	if _, err := db.Exec("PRAGMA synchronous=FULL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("设置synchronous失败: %w", err)
-	}
+		// 🔒 设置 synchronous=FULL 确保数据持久性
+		// FULL (2) 模式: 确保数据在关键时刻完全写入磁盘
+		// 配合 WAL 模式,在保证数据安全的同时获得良好性能
+		if _, err := db.Exec("PRAGMA synchronous=FULL"); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("设置synchronous失败: %w", err)
+		}
 		log.Printf("✅ 使用SQLite数据库，已启用 WAL 模式和 FULL 同步")
 	}
 
@@ -325,15 +325,15 @@ func (d *Database) createTables(isMySQL bool) error {
 		}
 	}
 
-		// 为现有数据库添加新字段（向后兼容）
+	// 为现有数据库添加新字段（向后兼容）
 	alterQueries := []string{
-		`ALTER TABLE exchanges ADD COLUMN provider TEXT DEFAULT ''`,
-		`ALTER TABLE exchanges ADD COLUMN label TEXT DEFAULT ''`,
 		`ALTER TABLE exchanges ADD COLUMN hyperliquid_wallet_addr TEXT DEFAULT ''`,
 		`ALTER TABLE exchanges ADD COLUMN aster_user TEXT DEFAULT ''`,
 		`ALTER TABLE exchanges ADD COLUMN aster_signer TEXT DEFAULT ''`,
 		`ALTER TABLE exchanges ADD COLUMN aster_private_key TEXT DEFAULT ''`,
 		`ALTER TABLE exchanges ADD COLUMN passphrase TEXT DEFAULT ''`,
+		`ALTER TABLE exchanges ADD COLUMN provider TEXT DEFAULT ''`,
+		`ALTER TABLE exchanges ADD COLUMN label TEXT DEFAULT ''`,
 		`ALTER TABLE traders ADD COLUMN custom_prompt TEXT DEFAULT ''`,
 		`ALTER TABLE traders ADD COLUMN override_base_prompt BOOLEAN DEFAULT 0`,
 		`ALTER TABLE traders ADD COLUMN is_cross_margin BOOLEAN DEFAULT 1`,             // 默认为全仓模式
@@ -354,18 +354,12 @@ func (d *Database) createTables(isMySQL bool) error {
 		`ALTER TABLE traders ADD COLUMN category TEXT DEFAULT ''`,            // 交易员分类
 		`ALTER TABLE traders ADD COLUMN trader_account_id TEXT DEFAULT NULL`, // 关联的交易员账号用户ID
 		`ALTER TABLE traders ADD COLUMN owner_user_id TEXT DEFAULT NULL`,     // 创建该交易员的用户ID
-		`ALTER TABLE exchanges ADD COLUMN provider TEXT DEFAULT ''`,          // 交易所提供商
-		`ALTER TABLE exchanges ADD COLUMN label TEXT DEFAULT ''`,             // 用户自定义标签
 	}
 
 	for _, query := range alterQueries {
 		// 忽略已存在字段的错误
 		d.db.Exec(query)
 	}
-
-	// 数据迁移：如果provider为空，将其设置为id（兼容旧数据）
-	d.db.Exec("UPDATE exchanges SET provider = id WHERE provider = '' OR provider IS NULL")
-	d.db.Exec("UPDATE exchanges SET label = name WHERE label = '' OR label IS NULL")
 
 	// 检查是否需要迁移exchanges表的主键结构
 	err := d.migrateExchangesTable()
@@ -432,9 +426,9 @@ func (d *Database) initDefaultData(isMySQL bool) error {
 
 	for _, exchange := range exchanges {
 		_, err := d.db.Exec(fmt.Sprintf(`
-			%s INTO exchanges (id, user_id, name, type, enabled, provider, label) 
-			VALUES (?, 'default', ?, ?, 0, ?, ?)
-		`, insertIgnore), exchange.id, exchange.name, exchange.typ, exchange.id, exchange.name)
+			%s INTO exchanges (id, user_id, name, type, enabled) 
+			VALUES (?, 'default', ?, ?, 0)
+		`, insertIgnore), exchange.id, exchange.name, exchange.typ)
 		if err != nil {
 			return fmt.Errorf("初始化交易所失败: %w", err)
 		}
@@ -592,11 +586,11 @@ type AIModelConfig struct {
 type ExchangeConfig struct {
 	ID         string `json:"id"`
 	UserID     string `json:"user_id"`
-	Provider   string `json:"provider"` // 交易所类型: "binance", "hyperliquid", "aster"
-	Label      string `json:"label"`    // 用户自定义标签
+	Provider   string `json:"provider"`
 	Name       string `json:"name"`
 	Type       string `json:"type"`
 	Enabled    bool   `json:"enabled"`
+	Label      string `json:"label"`      // 用户自定义标签，用于区分同一交易所的多个账号
 	APIKey     string `json:"apiKey"`     // For Binance: API Key; For Hyperliquid: Agent Private Key (should have ~0 balance)
 	SecretKey  string `json:"secretKey"`  // For Binance: Secret Key; Not used for Hyperliquid
 	Passphrase string `json:"passphrase"` // For OKX/Bitget: Passphrase
@@ -821,19 +815,9 @@ func (d *Database) GetAIModels(userID string) ([]*AIModelConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		// 🔍 调试：记录原始 API Key 状态
-		originalAPIKey := model.APIKey
 		// 解密API Key（如果为空字符串则跳过解密）
 		if model.APIKey != "" {
 			model.APIKey = d.decryptSensitiveData(model.APIKey)
-			// 🔍 调试：记录解密结果
-			if model.APIKey == "" && originalAPIKey != "" {
-				previewLen := 20
-				if len(originalAPIKey) < previewLen {
-					previewLen = len(originalAPIKey)
-				}
-				log.Printf("⚠️ 模型 %s (用户 %s) 的 API Key 解密失败，原始值: %s", model.ID, model.UserID, originalAPIKey[:previewLen])
-			}
 		}
 		models = append(models, &model)
 	}
@@ -928,7 +912,8 @@ func (d *Database) UpdateAIModel(userID, id string, enabled bool, apiKey, custom
 
 // GetExchanges 获取用户的交易所配置
 func (d *Database) GetExchanges(userID string) ([]*ExchangeConfig, error) {
-	rows, err := d.db.Query(`
+	// 构建查询SQL，包含provider和label字段
+	query := `
 		SELECT id, user_id, name, type, enabled, 
 		       COALESCE(api_key, '') as api_key, 
 		       COALESCE(secret_key, '') as secret_key, 
@@ -942,7 +927,9 @@ func (d *Database) GetExchanges(userID string) ([]*ExchangeConfig, error) {
 		       COALESCE(label, '') as label,
 		       created_at, updated_at 
 		FROM exchanges WHERE user_id = ? ORDER BY id
-	`, userID)
+	`
+
+	rows, err := d.db.Query(query, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -952,50 +939,43 @@ func (d *Database) GetExchanges(userID string) ([]*ExchangeConfig, error) {
 	exchanges := make([]*ExchangeConfig, 0)
 	for rows.Next() {
 		var exchange ExchangeConfig
+		var dbProvider, dbLabel string
+
 		err := rows.Scan(
 			&exchange.ID, &exchange.UserID, &exchange.Name, &exchange.Type,
 			&exchange.Enabled, &exchange.APIKey, &exchange.SecretKey, &exchange.Testnet,
 			&exchange.HyperliquidWalletAddr, &exchange.AsterUser,
 			&exchange.AsterSigner, &exchange.AsterPrivateKey, &exchange.Passphrase,
-			&exchange.Provider, &exchange.Label,
+			&dbProvider, &dbLabel,
 			&exchange.CreatedAt, &exchange.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
 
-		// 如果 Provider 为空，尝试从 ID 推断（兼容旧数据）
-		if exchange.Provider == "" {
-			if strings.HasPrefix(exchange.ID, "binance") {
-				exchange.Provider = "binance"
-			} else if strings.HasPrefix(exchange.ID, "hyperliquid") {
-				exchange.Provider = "hyperliquid"
-			} else if strings.HasPrefix(exchange.ID, "aster") {
-				exchange.Provider = "aster"
-			} else if strings.HasPrefix(exchange.ID, "bitget") {
-				exchange.Provider = "bitget"
-			} else {
-				exchange.Provider = exchange.ID // Fallback
-			}
-		}
-		// 如果 Label 为空，使用 Name
-		if exchange.Label == "" {
-			exchange.Label = exchange.Name
-		}
-
 		// 解密敏感字段（如果为空字符串则跳过解密）
 		if exchange.APIKey != "" {
-		exchange.APIKey = d.decryptSensitiveData(exchange.APIKey)
+			exchange.APIKey = d.decryptSensitiveData(exchange.APIKey)
 		}
 		if exchange.SecretKey != "" {
-		exchange.SecretKey = d.decryptSensitiveData(exchange.SecretKey)
+			exchange.SecretKey = d.decryptSensitiveData(exchange.SecretKey)
 		}
 		if exchange.AsterPrivateKey != "" {
-		exchange.AsterPrivateKey = d.decryptSensitiveData(exchange.AsterPrivateKey)
+			exchange.AsterPrivateKey = d.decryptSensitiveData(exchange.AsterPrivateKey)
 		}
 		if exchange.Passphrase != "" {
-		exchange.Passphrase = d.decryptSensitiveData(exchange.Passphrase)
+			exchange.Passphrase = d.decryptSensitiveData(exchange.Passphrase)
 		}
+
+		// 如果数据库中有provider，使用数据库值，否则推导
+		if dbProvider != "" {
+			exchange.Provider = dbProvider
+		} else {
+			exchange.Provider = inferExchangeProvider(exchange.Type, exchange.ID)
+		}
+
+		// 🔑 关键修复：将数据库中的label赋值给Label字段，前端会优先显示此字段
+		exchange.Label = dbLabel
 
 		exchanges = append(exchanges, &exchange)
 	}
@@ -1005,7 +985,7 @@ func (d *Database) GetExchanges(userID string) ([]*ExchangeConfig, error) {
 
 // UpdateExchange 更新交易所配置，如果不存在则创建用户特定配置
 // 🔒 安全特性：空值不会覆盖现有的敏感字段（api_key, secret_key, aster_private_key）
-func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secretKey, passphrase string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string, provider, label string) error {
+func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secretKey, passphrase string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey, provider, label string) error {
 	log.Printf("🔧 UpdateExchange: userID=%s, id=%s, enabled=%v, provider=%s, label=%s", userID, id, enabled, provider, label)
 
 	// 构建动态 UPDATE SET 子句
@@ -1021,23 +1001,6 @@ func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secre
 		"label = ?",
 		fmt.Sprintf("updated_at = %s", timeFunc),
 	}
-	
-	// 确保 provider 不为空
-	if provider == "" {
-		// 尝试从 ID 推断
-		if strings.HasPrefix(id, "binance") {
-			provider = "binance"
-		} else if strings.HasPrefix(id, "hyperliquid") {
-			provider = "hyperliquid"
-		} else if strings.HasPrefix(id, "aster") {
-			provider = "aster"
-		} else if strings.HasPrefix(id, "bitget") {
-			provider = "bitget"
-		} else {
-			provider = id
-		}
-	}
-	
 	args := []interface{}{enabled, testnet, hyperliquidWalletAddr, asterUser, asterSigner, provider, label}
 
 	// 🔒 敏感字段：只在非空时更新（保护现有数据）
@@ -1094,34 +1057,23 @@ func (d *Database) UpdateExchange(userID, id string, enabled bool, apiKey, secre
 	if rowsAffected == 0 {
 		log.Printf("💡 UpdateExchange: 没有现有记录，创建新记录")
 
-		// 根据交易所Provider确定基本信息
+		// 根据交易所ID确定基本信息
 		var name, typ string
-		if provider == "binance" {
+		if id == "binance" {
 			name = "Binance Futures"
 			typ = "cex"
-		} else if provider == "hyperliquid" {
+		} else if id == "hyperliquid" {
 			name = "Hyperliquid"
 			typ = "dex"
-		} else if provider == "aster" {
+		} else if id == "aster" {
 			name = "Aster DEX"
 			typ = "dex"
-		} else if provider == "bitget" {
-			name = "Bitget Futures"
-			typ = "cex"
 		} else {
-			name = label // 使用 Label 作为名称
-			if name == "" {
-				name = id + " Exchange"
-			}
+			name = id + " Exchange"
 			typ = "cex"
-		}
-		
-		// 如果提供了 Label，将其作为名称的一部分或直接作为名称
-		if label != "" {
-			name = label
 		}
 
-		log.Printf("🆕 UpdateExchange: 创建新记录 ID=%s, Provider=%s, Name=%s, Type=%s", id, provider, name, typ)
+		log.Printf("🆕 UpdateExchange: 创建新记录 ID=%s, name=%s, type=%s", id, name, typ)
 
 		// 创建用户特定的配置，使用原始的交易所ID
 		encryptedAPIKey := d.encryptSensitiveData(apiKey)
@@ -1166,12 +1118,12 @@ func (d *Database) CreateAIModel(userID, id, name, provider string, enabled bool
 			INSERT OR IGNORE INTO ai_models (id, user_id, name, provider, enabled, api_key, custom_api_url, created_at, updated_at) 
 			VALUES (?, ?, ?, ?, ?, ?, ?, %s, %s)
 		`, timeFunc, timeFunc), id, userID, name, provider, enabled, encryptedAPIKey, customAPIURL)
-	return err
+		return err
 	}
 }
 
 // CreateExchange 创建交易所配置
-func (d *Database) CreateExchange(userID, id, name, typ string, enabled bool, apiKey, secretKey string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey, provider, label string) error {
+func (d *Database) CreateExchange(userID, id, name, typ string, enabled bool, apiKey, secretKey string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string) error {
 	// 加密敏感字段
 	encryptedAPIKey := d.encryptSensitiveData(apiKey)
 	encryptedSecretKey := d.encryptSensitiveData(secretKey)
@@ -1181,17 +1133,17 @@ func (d *Database) CreateExchange(userID, id, name, typ string, enabled bool, ap
 	if d.isMySQL {
 		// MySQL语法（INSERT IGNORE）
 		_, err := d.db.Exec(fmt.Sprintf(`
-			INSERT IGNORE INTO exchanges (id, user_id, name, type, enabled, api_key, secret_key, testnet, hyperliquid_wallet_addr, aster_user, aster_signer, aster_private_key, provider, label, created_at, updated_at) 
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, %s, %s)
-		`, timeFunc, timeFunc), id, userID, name, typ, enabled, encryptedAPIKey, encryptedSecretKey, testnet, hyperliquidWalletAddr, asterUser, asterSigner, encryptedAsterPrivateKey, provider, label)
+			INSERT IGNORE INTO exchanges (id, user_id, name, type, enabled, api_key, secret_key, testnet, hyperliquid_wallet_addr, aster_user, aster_signer, aster_private_key, created_at, updated_at) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, %s, %s)
+		`, timeFunc, timeFunc), id, userID, name, typ, enabled, encryptedAPIKey, encryptedSecretKey, testnet, hyperliquidWalletAddr, asterUser, asterSigner, encryptedAsterPrivateKey)
 		return err
 	} else {
 		// SQLite语法（INSERT OR IGNORE）
 		_, err := d.db.Exec(fmt.Sprintf(`
-			INSERT OR IGNORE INTO exchanges (id, user_id, name, type, enabled, api_key, secret_key, testnet, hyperliquid_wallet_addr, aster_user, aster_signer, aster_private_key, provider, label, created_at, updated_at) 
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, %s, %s)
-		`, timeFunc, timeFunc), id, userID, name, typ, enabled, encryptedAPIKey, encryptedSecretKey, testnet, hyperliquidWalletAddr, asterUser, asterSigner, encryptedAsterPrivateKey, provider, label)
-	return err
+			INSERT OR IGNORE INTO exchanges (id, user_id, name, type, enabled, api_key, secret_key, testnet, hyperliquid_wallet_addr, aster_user, aster_signer, aster_private_key, created_at, updated_at) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, %s, %s)
+		`, timeFunc, timeFunc), id, userID, name, typ, enabled, encryptedAPIKey, encryptedSecretKey, testnet, hyperliquidWalletAddr, asterUser, asterSigner, encryptedAsterPrivateKey)
+		return err
 	}
 }
 
@@ -1320,6 +1272,8 @@ func (d *Database) GetTraderConfig(userID, traderID string) (*TraderRecord, *AIM
 	var aiModel AIModelConfig
 	var exchange ExchangeConfig
 
+	var exchangeProvider, exchangeLabel string
+
 	err := d.db.QueryRow(`
 		SELECT
 			t.id, t.user_id, t.name, t.ai_model_id, t.exchange_id, t.initial_balance, t.scan_interval_minutes, t.is_running,
@@ -1342,6 +1296,8 @@ func (d *Database) GetTraderConfig(userID, traderID string) (*TraderRecord, *AIM
 			COALESCE(e.aster_user, '') as aster_user,
 			COALESCE(e.aster_signer, '') as aster_signer,
 			COALESCE(e.aster_private_key, '') as aster_private_key,
+			COALESCE(e.provider, '') as provider,
+			COALESCE(e.label, '') as label,
 			e.created_at, e.updated_at
 		FROM traders t
 		JOIN ai_models a ON t.ai_model_id = a.id AND t.user_id = a.user_id
@@ -1361,6 +1317,7 @@ func (d *Database) GetTraderConfig(userID, traderID string) (*TraderRecord, *AIM
 		&exchange.ID, &exchange.UserID, &exchange.Name, &exchange.Type, &exchange.Enabled,
 		&exchange.APIKey, &exchange.SecretKey, &exchange.Testnet,
 		&exchange.HyperliquidWalletAddr, &exchange.AsterUser, &exchange.AsterSigner, &exchange.AsterPrivateKey,
+		&exchangeProvider, &exchangeLabel,
 		&exchange.CreatedAt, &exchange.UpdatedAt,
 	)
 
@@ -1374,7 +1331,40 @@ func (d *Database) GetTraderConfig(userID, traderID string) (*TraderRecord, *AIM
 	exchange.SecretKey = d.decryptSensitiveData(exchange.SecretKey)
 	exchange.AsterPrivateKey = d.decryptSensitiveData(exchange.AsterPrivateKey)
 
+	// 推导 Provider（优先使用数据库值，否则从 Type 或 ID 推导）
+	if exchangeProvider != "" {
+		exchange.Provider = exchangeProvider
+	} else {
+		exchange.Provider = inferExchangeProvider(exchange.Type, exchange.ID)
+	}
+
+	// 设置 Label 字段
+	exchange.Label = exchangeLabel
+
 	return &trader, &aiModel, &exchange, nil
+}
+
+// inferExchangeProvider 根据 type 或 id 推导交易所 provider
+func inferExchangeProvider(typ, id string) string {
+	known := map[string]struct{}{
+		"binance":     {},
+		"bitget":      {},
+		"hyperliquid": {},
+		"aster":       {},
+		"okx":         {},
+		"bybit":       {},
+	}
+	lt := strings.ToLower(typ)
+	if _, ok := known[lt]; ok {
+		return lt
+	}
+	if idx := strings.Index(id, "_"); idx > 0 {
+		return strings.ToLower(id[:idx])
+	}
+	if id != "" {
+		return strings.ToLower(id)
+	}
+	return lt
 }
 
 // GetSystemConfig 获取系统配置
@@ -1404,7 +1394,7 @@ func (d *Database) SetSystemConfig(key, value string) error {
 			INSERT OR REPLACE INTO system_config (key, value, updated_at) 
 			VALUES (?, ?, %s)
 		`, timeFunc), key, value)
-	return err
+		return err
 	}
 }
 
@@ -1429,7 +1419,7 @@ func (d *Database) CreateUserSignalSource(userID, coinPoolURL, oiTopURL string) 
 		INSERT OR REPLACE INTO user_signal_sources (user_id, coin_pool_url, oi_top_url, updated_at)
 			VALUES (?, ?, ?, %s)
 		`, timeFunc), userID, coinPoolURL, oiTopURL)
-	return err
+		return err
 	}
 }
 
@@ -1867,7 +1857,6 @@ func (d *Database) GetTradersByID(traderID string) ([]*TraderRecord, error) {
 
 // GetTraderByID 根据ID获取单个交易员（包含owner_user_id和category）
 func (d *Database) GetTraderByID(traderID string) (*TraderRecord, error) {
-	log.Printf("🔍 [GetTraderByID] 查询交易员: ID=%s", traderID)
 	var trader TraderRecord
 	err := d.db.QueryRow(`
 		SELECT id, user_id, name, ai_model_id, exchange_id, initial_balance, scan_interval_minutes, is_running,
@@ -1893,10 +1882,8 @@ func (d *Database) GetTraderByID(traderID string) (*TraderRecord, error) {
 		&trader.CreatedAt, &trader.UpdatedAt,
 	)
 	if err != nil {
-		log.Printf("⚠️ [GetTraderByID] 查询失败: ID=%s, 错误=%v", traderID, err)
 		return nil, err
 	}
-	log.Printf("✅ [GetTraderByID] 找到交易员: ID=%s, ExchangeID=%s, AIModelID=%s", trader.ID, trader.ExchangeID, trader.AIModelID)
 	return &trader, nil
 }
 

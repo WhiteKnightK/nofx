@@ -137,7 +137,17 @@ export function EquityChart({ traderId }: EquityChartProps) {
     }
   })
 
-  const currentValue = chartData[chartData.length - 1]
+  // 🔑 关键修复：使用实时account数据计算当前盈亏，而不是历史数据
+  // 历史数据有30秒延迟，account数据只有15秒延迟
+  const currentEquity = account?.total_equity || chartData[chartData.length - 1].raw_equity
+  const currentPnl = currentEquity - initialBalance
+  const currentPnlPct = ((currentPnl / initialBalance) * 100).toFixed(2)
+  
+  const currentValue = {
+    raw_equity: currentEquity,
+    raw_pnl: currentPnl,
+    raw_pnl_pct: parseFloat(currentPnlPct),
+  }
   const isProfit = currentValue.raw_pnl >= 0
 
   // 计算Y轴范围

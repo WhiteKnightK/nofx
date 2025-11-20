@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -255,45 +256,54 @@ func (cs *CryptoService) DecryptFromStorage(value string, aadParts ...string) (s
 		return "", nil
 	}
 	if !cs.HasDataKey() {
+		log.Printf("❌ DecryptFromStorage: data encryption key not configured")
 		return "", errors.New("data encryption key not configured")
 	}
 	if !isEncryptedStorageValue(value) {
+		log.Printf("⚠️ DecryptFromStorage: value is not encrypted (length: %d)", len(value))
 		return "", errors.New("value is not encrypted")
 	}
 
 	payload := strings.TrimPrefix(value, storagePrefix)
 	parts := strings.SplitN(payload, storageDelimiter, 2)
 	if len(parts) != 2 {
+		log.Printf("❌ DecryptFromStorage: invalid encrypted payload format")
 		return "", errors.New("invalid encrypted payload format")
 	}
 
 	nonce, err := base64.StdEncoding.DecodeString(parts[0])
 	if err != nil {
+		log.Printf("❌ DecryptFromStorage: decode nonce failed: %v", err)
 		return "", fmt.Errorf("decode nonce failed: %w", err)
 	}
 
 	ciphertext, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
+		log.Printf("❌ DecryptFromStorage: decode ciphertext failed: %v", err)
 		return "", fmt.Errorf("decode ciphertext failed: %w", err)
 	}
 
 	block, err := aes.NewCipher(cs.dataKey)
 	if err != nil {
+		log.Printf("❌ DecryptFromStorage: create cipher failed: %v", err)
 		return "", err
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
+		log.Printf("❌ DecryptFromStorage: create GCM failed: %v", err)
 		return "", err
 	}
 
 	if len(nonce) != gcm.NonceSize() {
+		log.Printf("❌ DecryptFromStorage: invalid nonce size: expected %d, got %d", gcm.NonceSize(), len(nonce))
 		return "", fmt.Errorf("invalid nonce size: expected %d, got %d", gcm.NonceSize(), len(nonce))
 	}
 
 	aad := composeAAD(aadParts)
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
+		log.Printf("❌ DecryptFromStorage: GCM decryption failed: %v. This usually means DATA_ENCRYPTION_KEY has changed.", err)
 		return "", fmt.Errorf("decryption failed: %w", err)
 	}
 
@@ -320,6 +330,7 @@ func (cs *CryptoService) DecryptPayload(payload *EncryptedPayload) ([]byte, erro
 	if payload.TS != 0 {
 		elapsed := time.Since(time.Unix(payload.TS, 0))
 		if elapsed > 5*time.Minute || elapsed < -1*time.Minute {
+			log.Printf("❌ DecryptPayload: timestamp invalid or expired (elapsed: %v)", elapsed)
 			return nil, errors.New("timestamp invalid or expired")
 		}
 	}
@@ -327,16 +338,19 @@ func (cs *CryptoService) DecryptPayload(payload *EncryptedPayload) ([]byte, erro
 	// 2. 解码 base64url
 	wrappedKey, err := base64.RawURLEncoding.DecodeString(payload.WrappedKey)
 	if err != nil {
+		log.Printf("❌ DecryptPayload: failed to decode wrapped key: %v", err)
 		return nil, fmt.Errorf("failed to decode wrapped key: %w", err)
 	}
 
 	iv, err := base64.RawURLEncoding.DecodeString(payload.IV)
 	if err != nil {
+		log.Printf("❌ DecryptPayload: failed to decode IV: %v", err)
 		return nil, fmt.Errorf("failed to decode IV: %w", err)
 	}
 
 	ciphertext, err := base64.RawURLEncoding.DecodeString(payload.Ciphertext)
 	if err != nil {
+		log.Printf("❌ DecryptPayload: failed to decode ciphertext: %v", err)
 		return nil, fmt.Errorf("failed to decode ciphertext: %w", err)
 	}
 
@@ -344,6 +358,7 @@ func (cs *CryptoService) DecryptPayload(payload *EncryptedPayload) ([]byte, erro
 	if payload.AAD != "" {
 		aad, err = base64.RawURLEncoding.DecodeString(payload.AAD)
 		if err != nil {
+			log.Printf("❌ DecryptPayload: failed to decode AAD: %v", err)
 			return nil, fmt.Errorf("failed to decode AAD: %w", err)
 		}
 
@@ -358,27 +373,32 @@ func (cs *CryptoService) DecryptPayload(payload *EncryptedPayload) ([]byte, erro
 	// 3. 使用 RSA-OAEP 解密 AES 密钥
 	aesKey, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, cs.privateKey, wrappedKey, nil)
 	if err != nil {
+		log.Printf("❌ DecryptPayload: failed to unwrap AES key: %v", err)
 		return nil, fmt.Errorf("failed to unwrap AES key: %w", err)
 	}
 
 	// 4. 使用 AES-GCM 解密数据
 	block, err := aes.NewCipher(aesKey)
 	if err != nil {
+		log.Printf("❌ DecryptPayload: failed to create AES cipher: %v", err)
 		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
+		log.Printf("❌ DecryptPayload: failed to create GCM: %v", err)
 		return nil, fmt.Errorf("failed to create GCM: %w", err)
 	}
 
 	if len(iv) != gcm.NonceSize() {
+		log.Printf("❌ DecryptPayload: invalid IV size: expected %d, got %d", gcm.NonceSize(), len(iv))
 		return nil, fmt.Errorf("invalid IV size: expected %d, got %d", gcm.NonceSize(), len(iv))
 	}
 
 	// 解密并验证认证标签
 	plaintext, err := gcm.Open(nil, iv, ciphertext, aad)
 	if err != nil {
+		log.Printf("❌ DecryptPayload: authentication/decryption failed: %v", err)
 		return nil, fmt.Errorf("authentication/decryption failed: %w", err)
 	}
 

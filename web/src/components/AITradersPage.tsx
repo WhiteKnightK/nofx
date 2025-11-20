@@ -7,6 +7,14 @@ import type {
   AIModel,
   Exchange,
 } from '../types'
+
+interface Category {
+  id: string
+  name: string
+  description?: string
+  owner_id: string
+  created_at: string
+}
 import { useLanguage } from '../contexts/LanguageContext'
 import { t, type Language } from '../i18n/translations'
 import { useAuth } from '../contexts/AuthContext'
@@ -100,6 +108,31 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     category: string
     created_at: string
   }>>([])
+
+  // 在组件外部定义加载缓存的函数
+  const loadCachedConfigs = () => {
+    try {
+      const cachedModels = localStorage.getItem('cached_ai_models')
+      const cachedExchanges = localStorage.getItem('cached_exchanges')
+      const cachedCategories = localStorage.getItem('cached_categories')
+      
+      return {
+        models: cachedModels ? JSON.parse(cachedModels) : null,
+        exchanges: cachedExchanges ? JSON.parse(cachedExchanges) : null,
+        categories: cachedCategories ? JSON.parse(cachedCategories) : null,
+      }
+    } catch (e) {
+      console.error('Failed to load cached configs:', e)
+      return { models: null, exchanges: null, categories: null }
+    }
+  }
+
+  // 加载初始缓存数据
+  const cachedData = useMemo(() => loadCachedConfigs(), [])
+
+  const [allModels, setAllModels] = useState<AIModel[] | undefined>(cachedData.models || undefined)
+  const [allExchanges, setAllExchanges] = useState<Exchange[] | undefined>(cachedData.exchanges || undefined)
+  const [categories, setCategories] = useState<Category[]>(cachedData.categories || [])
   // 从localStorage加载分类账号
   const loadCategoryAccountsFromStorage = (): Record<string, { email: string; password: string }> => {
     try {
@@ -167,7 +200,6 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
     }
   }
 
-  const [categories, setCategories] = useState<any[]>([])
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type: 'success' | 'error' | 'warning' | 'info' }>>([])
   
   // 显示Toast提示
@@ -183,8 +215,6 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   const [editingModel, setEditingModel] = useState<string | null>(null)
   const [editingExchange, setEditingExchange] = useState<string | null>(null)
   const [editingTrader, setEditingTrader] = useState<any>(null)
-  const [allModels, setAllModels] = useState<AIModel[]>([])
-  const [allExchanges, setAllExchanges] = useState<Exchange[]>([])
   const [supportedModels, setSupportedModels] = useState<AIModel[]>([])
   const [supportedExchanges, setSupportedExchanges] = useState<Exchange[]>([])
   const [userSignalSource, setUserSignalSource] = useState<{
@@ -272,6 +302,14 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         setSupportedModels(supportedModels)
         setSupportedExchanges(supportedExchanges)
 
+        // 更新缓存
+        try {
+          localStorage.setItem('cached_ai_models', JSON.stringify(modelConfigs))
+          localStorage.setItem('cached_exchanges', JSON.stringify(exchangeConfigs))
+        } catch (e) {
+          console.error('Failed to cache configs:', e)
+        }
+
         // 加载用户信号源配置
         try {
           const signalSource = await api.getUserSignalSource()
@@ -288,6 +326,12 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           try {
             const categoriesList = await api.getCategories()
             setCategories(categoriesList)
+            // 更新缓存
+            try {
+              localStorage.setItem('cached_categories', JSON.stringify(categoriesList))
+            } catch (e) {
+              console.error('Failed to cache categories:', e)
+            }
             // 同时加载账号和小组组长列表
             await loadCategoryAccounts()
             await loadGroupLeaders()
@@ -747,7 +791,6 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
         const parts = exchangeId.split('_')
         // 假设格式是 provider_suffix
         provider = parts[0] 
-        // 特殊处理：有些 provider 本身带下划线？目前没有
       }
 
       // 找到要配置的交易所（从supportedExchanges中）
@@ -773,7 +816,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       let updatedExchanges
       // 编辑模式下使用 editingExchange 作为最终ID，添加模式下使用 exchangeId（可能会被修改为唯一ID）
       let finalExchangeId = isEditMode ? (editingExchange || exchangeId) : exchangeId
-      // 默认标签：优先使用用户输入，其次是已有 label，再次是名称
+      // 默认标签：优先使用用户输入，其次是已有 label，其次是名称
       let finalLabel =
         trimmedUserLabel ||
         (existingExchange as any)?.label ||
@@ -797,7 +840,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                   passphrase,
                   enabled: true,
                   provider: provider, // 确保 provider 存在
-                  label: (trimmedUserLabel || e.label || e.name) as string, // 优先使用用户输入，其次保持原有标签
+                  label: trimmedUserLabel || (e as any).label || e.name, // 优先使用用户新输入的，如果没有输入则保持原有
                 }
               : e
           ) || []
@@ -860,6 +903,13 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       // 重新获取用户配置以确保数据同步
       const refreshedExchanges = await api.getExchangeConfigs()
       setAllExchanges(refreshedExchanges)
+      
+      // 更新缓存
+      try {
+        localStorage.setItem('cached_exchanges', JSON.stringify(refreshedExchanges))
+      } catch (e) {
+        console.error('Failed to update exchanges cache:', e)
+      }
 
       setShowExchangeModal(false)
       setEditingExchange(null)
@@ -1420,10 +1470,11 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                         className="font-semibold text-sm md:text-base truncate"
                         style={{ color: '#EAECEF' }}
                       >
-                        {getShortName(exchange.name)}
+                        {(exchange as any).label || getShortName(exchange.name)}
                       </div>
                       <div className="text-xs" style={{ color: '#848E9C' }}>
                         {exchange.type.toUpperCase()} •{' '}
+                        {getShortName(exchange.name)} •{' '}
                         {inUse
                           ? t('inUse', language)
                           : exchange.enabled
@@ -1984,7 +2035,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       {showModelModal && (
         <ModelConfigModal
           allModels={supportedModels}
-          configuredModels={allModels} // 用户已配置的模型（从后端获取，包含 API Key）
+          configuredModels={allModels || []} // 用户已配置的模型（从后端获取，包含 API Key）
           editingModelId={editingModel}
           onSave={handleSaveModelConfig}
           onDelete={handleDeleteModelConfig}
@@ -2000,7 +2051,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       {showExchangeModal && (
         <ExchangeConfigModal
           supportedExchanges={supportedExchanges}
-          configuredExchanges={allExchanges}
+          configuredExchanges={allExchanges || []}
           editingExchangeId={editingExchange}
           onSave={handleSaveExchangeConfig}
           onDelete={handleDeleteExchangeConfig}
@@ -2836,16 +2887,16 @@ function ExchangeConfigModal({
     setSecureInputTarget(null)
   }
 
-  // 掩盖敏感数据显示
-  const maskSecret = (secret: string) => {
-    if (!secret || secret.length === 0) return ''
-    if (secret.length <= 8) return '*'.repeat(secret.length)
-    return (
-      secret.slice(0, 4) +
-      '*'.repeat(Math.max(secret.length - 8, 4)) +
-      secret.slice(-4)
-    )
-  }
+  // 掩盖敏感数据显示 (unused, kept for potential future use)
+  // const maskSecret = (secret: string) => {
+  //   if (!secret || secret.length === 0) return ''
+  //   if (secret.length <= 8) return '*'.repeat(secret.length)
+  //   return (
+  //     secret.slice(0, 4) +
+  //     '*'.repeat(Math.max(secret.length - 8, 4)) +
+  //     secret.slice(-4)
+  //   )
+  // }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -2981,6 +3032,33 @@ function ExchangeConfigModal({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* 无论添加还是编辑模式，都允许修改标签 */}
+          {selectedExchange && (
+            <div>
+              <label
+                className="block text-sm font-semibold mb-1"
+                style={{ color: '#EAECEF' }}
+              >
+                账号标签（可选）
+              </label>
+              <input
+                type="text"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder={`例如：${getShortName(selectedExchange.name)} 主账号`}
+                className="w-full px-3 py-2 rounded text-sm"
+                style={{
+                  background: '#0B0E11',
+                  border: '1px solid #2B3139',
+                  color: '#EAECEF',
+                }}
+              />
+              <p className="mt-1 text-xs" style={{ color: '#848E9C' }}>
+                用来区分同一交易所的多个账号，例如「Bitget 主账号」「Bitget 副账号」。
+              </p>
+            </div>
+          )}
+
           {!editingExchangeId && (
             <>
               <div>
@@ -3010,32 +3088,6 @@ function ExchangeConfigModal({
                   ))}
                 </select>
               </div>
-
-              {selectedExchange && (
-                <div>
-                  <label
-                    className="block text-sm font-semibold mb-1"
-                    style={{ color: '#EAECEF' }}
-                  >
-                    账号标签（可选）
-                  </label>
-                  <input
-                    type="text"
-                    value={label}
-                    onChange={(e) => setLabel(e.target.value)}
-                    placeholder={`例如：${getShortName(selectedExchange.name)} 主账号`}
-                    className="w-full px-3 py-2 rounded text-sm"
-                    style={{
-                      background: '#0B0E11',
-                      border: '1px solid #2B3139',
-                      color: '#EAECEF',
-                    }}
-                  />
-                  <p className="mt-1 text-xs" style={{ color: '#848E9C' }}>
-                    用来区分同一交易所的多个账号，例如「Bitget 主账号」「Bitget 副账号」。
-                  </p>
-                </div>
-              )}
             </>
           )}
 
@@ -3053,7 +3105,7 @@ function ExchangeConfigModal({
                 </div>
                 <div>
                   <div className="font-semibold" style={{ color: '#EAECEF' }}>
-                    {isEditMode ? ((selectedExchange as any).label || selectedExchange.name) : getShortName(selectedExchange.name)}
+                    {label || (isEditMode ? ((selectedExchange as any).label || selectedExchange.name) : getShortName(selectedExchange.name))}
                   </div>
                   <div className="text-xs" style={{ color: '#848E9C' }}>
                     {selectedExchange.type.toUpperCase()} •{' '}

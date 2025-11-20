@@ -337,7 +337,7 @@ export function TraderConfigModal({
                   >
                     {availableExchanges.map((exchange) => (
                       <option key={exchange.id} value={exchange.id}>
-                        {getShortName(
+                        {(exchange as any).label || getShortName(
                           exchange.name || exchange.id
                         ).toUpperCase()}
                       </option>
