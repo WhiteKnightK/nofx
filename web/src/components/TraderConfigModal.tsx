@@ -88,7 +88,7 @@ export function TraderConfigModal({
         setSelectedCoins(coins)
       }
     } else if (!isEditMode) {
-      // 创建模式：使用默认值
+      // 创建模式：使用默认值（只在模态框首次打开时初始化一次）
       setFormData({
         trader_name: '',
         ai_model: availableModels[0]?.id || '',
@@ -106,7 +106,10 @@ export function TraderConfigModal({
         scan_interval_minutes: 3,
       })
     }
-  }, [traderData, isEditMode, availableModels, availableExchanges])
+    // 🔧 修复：移除availableModels和availableExchanges依赖，避免父组件刷新时重置表单
+    // 这些值只在模态框首次打开时需要读取，之后用户的修改不应被覆盖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [traderData, isEditMode])
 
   // 获取系统配置中的币种列表
   useEffect(() => {

@@ -12,19 +12,20 @@ import (
 
 // DecisionRecord 决策记录
 type DecisionRecord struct {
-	Timestamp      time.Time          `json:"timestamp"`       // 决策时间
-	CycleNumber    int                `json:"cycle_number"`    // 周期编号
-	SystemPrompt   string             `json:"system_prompt"`   // 系统提示词（发送给AI的系统prompt）
-	InputPrompt    string             `json:"input_prompt"`    // 发送给AI的输入prompt
-	CoTTrace       string             `json:"cot_trace"`       // AI思维链（输出）
-	DecisionJSON   string             `json:"decision_json"`   // 决策JSON
-	AccountState   AccountSnapshot    `json:"account_state"`   // 账户状态快照
-	Positions      []PositionSnapshot `json:"positions"`       // 持仓快照
-	CandidateCoins []string           `json:"candidate_coins"` // 候选币种列表
-	Decisions      []DecisionAction   `json:"decisions"`       // 执行的决策
-	ExecutionLog   []string           `json:"execution_log"`   // 执行日志
-	Success        bool               `json:"success"`         // 是否成功
-	ErrorMessage   string             `json:"error_message"`   // 错误信息（如果有）
+	Timestamp      time.Time          `json:"timestamp"`        // 决策时间
+	CycleNumber    int                `json:"cycle_number"`     // 周期编号
+	SystemPrompt   string             `json:"system_prompt"`    // 系统提示词（发送给AI的系统prompt）
+	InputPrompt    string             `json:"input_prompt"`     // 发送给AI的输入prompt
+	RawAIResponse  string             `json:"raw_ai_response"`  // AI原始响应（未裁剪）
+	CoTTrace       string             `json:"cot_trace"`        // AI思维链（从原始响应提取的部分）
+	DecisionJSON   string             `json:"decision_json"`    // 决策JSON
+	AccountState   AccountSnapshot    `json:"account_state"`    // 账户状态快照
+	Positions      []PositionSnapshot `json:"positions"`        // 持仓快照
+	CandidateCoins []string           `json:"candidate_coins"`  // 候选币种列表
+	Decisions      []DecisionAction   `json:"decisions"`        // 执行的决策
+	ExecutionLog   []string           `json:"execution_log"`    // 执行日志
+	Success        bool               `json:"success"`          // 是否成功
+	ErrorMessage   string             `json:"error_message"`    // 错误信息（如果有）
 }
 
 // AccountSnapshot 账户状态快照

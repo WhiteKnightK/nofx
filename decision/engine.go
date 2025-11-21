@@ -109,11 +109,12 @@ type Decision struct {
 
 // FullDecision AI的完整决策（包含思维链）
 type FullDecision struct {
-	SystemPrompt string     `json:"system_prompt"` // 系统提示词（发送给AI的系统prompt）
-	UserPrompt   string     `json:"user_prompt"`   // 发送给AI的输入prompt
-	CoTTrace     string     `json:"cot_trace"`     // 思维链分析（AI输出）
-	Decisions    []Decision `json:"decisions"`     // 具体决策列表
-	Timestamp    time.Time  `json:"timestamp"`
+	SystemPrompt  string     `json:"system_prompt"`  // 系统提示词（发送给AI的系统prompt）
+	UserPrompt    string     `json:"user_prompt"`    // 发送给AI的输入prompt
+	RawAIResponse string     `json:"raw_ai_response"` // AI原始响应（未裁剪，包含所有内容）
+	CoTTrace      string     `json:"cot_trace"`      // 思维链分析（从原始响应中提取的部分）
+	Decisions     []Decision `json:"decisions"`      // 具体决策列表
+	Timestamp     time.Time  `json:"timestamp"`
 }
 
 // GetFullDecision 获取AI的完整交易决策（批量分析所有币种和持仓）
@@ -145,8 +146,9 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient *mcp.Client, custom
 	}
 
 	decision.Timestamp = time.Now()
-	decision.SystemPrompt = systemPrompt // 保存系统prompt
-	decision.UserPrompt = userPrompt     // 保存输入prompt
+	decision.SystemPrompt = systemPrompt  // 保存系统prompt
+	decision.UserPrompt = userPrompt      // 保存输入prompt
+	decision.RawAIResponse = aiResponse   // 保存AI原始响应
 	return decision, nil
 }
 
@@ -258,27 +260,137 @@ func calculateMaxCandidates(ctx *Context) int {
 
 // buildSystemPromptWithCustom 构建包含自定义内容的 System Prompt
 func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinLeverage int, customPrompt string, overrideBase bool, templateName string) string {
-	// 如果覆盖基础prompt且有自定义prompt，只使用自定义prompt
+	// 如果覆盖基础prompt且有自定义prompt，使用自定义内容 + 必要的格式要求
 	if overrideBase && customPrompt != "" {
-		return customPrompt
+		var sb strings.Builder
+		
+		// 1. 自定义提示词（完全替代基础策略）
+		sb.WriteString(customPrompt)
+		sb.WriteString("\n\n")
+		sb.WriteString(strings.Repeat("=", 80))
+		sb.WriteString("\n\n")
+		
+		// 2. 硬约束（必须保留，确保风险控制）
+		sb.WriteString("# 硬约束（风险控制）\n\n")
+		sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
+		sb.WriteString("2. 最多持仓: 3个币种（质量>数量）\n")
+		sb.WriteString(fmt.Sprintf("3. 单币仓位: 山寨%.0f-%.0f U | BTC/ETH %.0f-%.0f U\n",
+			accountEquity*0.8, accountEquity*1.5, accountEquity*5, accountEquity*10))
+		sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
+		sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
+		sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
+		
+		// 3. 输出格式（必须保留，否则AI无法正确返回JSON）
+		sb.WriteString("# 输出格式 (严格遵守)\n\n")
+		sb.WriteString("**必须使用XML标签 <reasoning> 和 <decision> 标签分隔思维链和决策JSON，避免解析错误**\n\n")
+		sb.WriteString("```xml\n")
+		sb.WriteString("<reasoning>\n")
+		sb.WriteString("[你的完整思维分析过程...]\n")
+		sb.WriteString("</reasoning>\n\n")
+		sb.WriteString("<decision>\n")
+		sb.WriteString("[JSON数组...]\n")
+		sb.WriteString("</decision>\n")
+		sb.WriteString("```\n\n")
+		sb.WriteString("**JSON schema:**\n")
+		sb.WriteString("```json\n")
+		sb.WriteString("[\n")
+		sb.WriteString("  {\n")
+		sb.WriteString("    \"action\": \"open_long\" | \"open_short\" | \"close_long\" | \"close_short\" | \"hold\" | \"wait\",\n")
+		sb.WriteString("    \"symbol\": \"BTCUSDT\",\n")
+		sb.WriteString("    \"position_size_usd\": 500.0,\n")
+		sb.WriteString("    \"leverage\": 5,\n")
+		sb.WriteString("    \"stop_loss\": 50000.0,\n")
+		sb.WriteString("    \"take_profit\": 55000.0,\n")
+		sb.WriteString("    \"reasoning\": \"简短说明\"\n")
+		sb.WriteString("  }\n")
+		sb.WriteString("]\n")
+		sb.WriteString("```\n\n")
+		sb.WriteString("**重要说明**：\n")
+		sb.WriteString("- `position_size_usd`: 仓位大小（美元），而非币的数量\n")
+		sb.WriteString("- `stop_loss` 和 `take_profit`: 止损/止盈价格（非百分比）\n")
+		sb.WriteString("- 所有字段名必须小写，用下划线分隔\n")
+		
+		return sb.String()
 	}
 
-	// 获取基础prompt（使用指定的模板）
-	basePrompt := buildSystemPrompt(accountEquity, btcEthLeverage, altcoinLeverage, templateName)
-
-	// 如果没有自定义prompt，直接返回基础prompt
+	// 如果没有自定义prompt，直接使用基础prompt
 	if customPrompt == "" {
-		return basePrompt
+		return buildSystemPrompt(accountEquity, btcEthLeverage, altcoinLeverage, templateName)
 	}
 
-	// 添加自定义prompt部分到基础prompt
+	// 🔧 关键改进：将个性化策略放在最开头，成为AI最先看到和最重视的内容
+	// 构建顺序：个性化策略(置顶强调) -> 模板核心策略 -> 硬约束 -> 输出格式
 	var sb strings.Builder
-	sb.WriteString(basePrompt)
-	sb.WriteString("\n\n")
-	sb.WriteString("# 📌 个性化交易策略\n\n")
+	
+	// 1. 🚨 个性化交易策略（最高优先级，置顶强调）
+	sb.WriteString("# 🚨 核心交易策略（最高优先级）\n\n")
+	sb.WriteString("**重要提示：以下是交易员的核心策略指令，必须严格遵守，优先级高于所有其他规则！**\n\n")
 	sb.WriteString(customPrompt)
 	sb.WriteString("\n\n")
-	sb.WriteString("注意: 以上个性化策略是对基础规则的补充，不能违背基础风险控制原则。\n")
+	sb.WriteString("---\n\n")
+	sb.WriteString("**再次强调**：上述策略是本次交易的**核心指导原则**，在不违背下方硬约束（风险控制）的前提下，必须优先执行！\n\n")
+	sb.WriteString(strings.Repeat("=", 80))
+	sb.WriteString("\n\n")
+
+	// 2. 加载提示词模板（基础交易策略部分）
+	if templateName == "" {
+		templateName = "default"
+	}
+	template, err := GetPromptTemplate(templateName)
+	if err != nil {
+		log.Printf("⚠️  提示词模板 '%s' 不存在，使用 default: %v", templateName, err)
+		template, err = GetPromptTemplate("default")
+		if err != nil {
+			log.Printf("❌ 无法加载任何提示词模板，使用内置简化版本")
+			sb.WriteString("你是专业的加密货币交易AI。请根据市场数据做出交易决策。\n\n")
+		} else {
+			sb.WriteString(template.Content)
+			sb.WriteString("\n\n")
+		}
+	} else {
+		sb.WriteString(template.Content)
+		sb.WriteString("\n\n")
+	}
+
+	// 3. 硬约束（风险控制）- 动态生成
+	sb.WriteString("# 硬约束（风险控制）\n\n")
+	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
+	sb.WriteString("2. 最多持仓: 3个币种（质量>数量）\n")
+	sb.WriteString(fmt.Sprintf("3. 单币仓位: 山寨%.0f-%.0f U | BTC/ETH %.0f-%.0f U\n",
+		accountEquity*0.8, accountEquity*1.5, accountEquity*5, accountEquity*10))
+	sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
+	sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
+	sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
+
+	// 4. 输出格式 - 动态生成
+	sb.WriteString("# 输出格式 (严格遵守)\n\n")
+	sb.WriteString("**必须使用XML标签 <reasoning> 和 <decision> 标签分隔思维链和决策JSON，避免解析错误**\n\n")
+	sb.WriteString("```xml\n")
+	sb.WriteString("<reasoning>\n")
+	sb.WriteString("[你的完整思维分析过程...]\n")
+	sb.WriteString("</reasoning>\n\n")
+	sb.WriteString("<decision>\n")
+	sb.WriteString("[JSON数组...]\n")
+	sb.WriteString("</decision>\n")
+	sb.WriteString("```\n\n")
+	sb.WriteString("**JSON schema:**\n")
+	sb.WriteString("```json\n")
+	sb.WriteString("[\n")
+	sb.WriteString("  {\n")
+	sb.WriteString("    \"action\": \"open_long\" | \"open_short\" | \"close_long\" | \"close_short\" | \"hold\" | \"wait\",\n")
+	sb.WriteString("    \"symbol\": \"BTCUSDT\",\n")
+	sb.WriteString("    \"position_size_usd\": 500.0,\n")
+	sb.WriteString("    \"leverage\": 5,\n")
+	sb.WriteString("    \"stop_loss\": 50000.0,\n")
+	sb.WriteString("    \"take_profit\": 55000.0,\n")
+	sb.WriteString("    \"reasoning\": \"简短说明\"\n")
+	sb.WriteString("  }\n")
+	sb.WriteString("]\n")
+	sb.WriteString("```\n\n")
+	sb.WriteString("**重要说明**：\n")
+	sb.WriteString("- `position_size_usd`: 仓位大小（美元），而非币的数量\n")
+	sb.WriteString("- `stop_loss` 和 `take_profit`: 止损/止盈价格（非百分比）\n")
+	sb.WriteString("- 所有字段名必须小写，用下划线分隔\n")
 
 	return sb.String()
 }
@@ -445,6 +557,13 @@ func buildUserPrompt(ctx *Context) string {
 
 // parseFullDecisionResponse 解析AI的完整决策响应
 func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int) (*FullDecision, error) {
+	// 🔍 调试：打印AI原始响应（可以看到是否有hello等内容）
+	log.Printf("\n" + strings.Repeat("=", 70))
+	log.Println("🤖 AI原始响应（未裁剪）:")
+	log.Println(strings.Repeat("=", 70))
+	log.Println(aiResponse)
+	log.Println(strings.Repeat("=", 70))
+	
 	// 1. 提取思维链
 	cotTrace := extractCoTTrace(aiResponse)
 
@@ -573,6 +692,11 @@ func extractDecisions(response string) ([]Decision, error) {
 		return nil, fmt.Errorf("JSON解析失败: %w\nJSON内容: %s", err, jsonContent)
 	}
 
+	// 🔧 规范化action字段：将所有action转为小写（容错AI可能输出大写OPEN_LONG等）
+	for i := range decisions {
+		decisions[i].Action = strings.ToLower(decisions[i].Action)
+	}
+
 	return decisions, nil
 }
 
@@ -618,20 +742,36 @@ func validateJSONFormat(jsonStr string) error {
 		return fmt.Errorf("JSON 必须以 [{ 开头（允许空白），实际: %s", trimmed[:min(20, len(trimmed))])
 	}
 
-	// 检查是否包含范围符号 ~（LLM 常见错误）
-	if strings.Contains(jsonStr, "~") {
-		return fmt.Errorf("JSON 中不可包含范围符号 ~，所有数字必须是精确的单一值")
+	// 检查是否在数字字段中包含范围符号 ~（LLM 常见错误）
+	// 注意：只检查可能是数字的位置（冒号后、逗号后），不检查字符串值内部
+	// 示例错误：{"quantity": 0.001~0.002}
+	// 示例正确：{"reason": "Risk-reward ~1:2.7"} ← 字符串值中的~是合法的
+	if strings.Contains(jsonStr, ": ~") || strings.Contains(jsonStr, ":~") {
+		return fmt.Errorf("JSON 数字字段不可使用范围符号 ~，必须是精确值")
 	}
 
-	// 检查是否包含千位分隔符（如 98,000）
-	// 使用简单的模式匹配：数字+逗号+3位数字
-	for i := 0; i < len(jsonStr)-4; i++ {
-		if jsonStr[i] >= '0' && jsonStr[i] <= '9' &&
-			jsonStr[i+1] == ',' &&
-			jsonStr[i+2] >= '0' && jsonStr[i+2] <= '9' &&
-			jsonStr[i+3] >= '0' && jsonStr[i+3] <= '9' &&
-			jsonStr[i+4] >= '0' && jsonStr[i+4] <= '9' {
-			return fmt.Errorf("JSON 数字不可包含千位分隔符逗号，发现: %s", jsonStr[i:min(i+10, len(jsonStr))])
+	// 检查是否在数字字段中包含千位分隔符（如 98,000）
+	// 只检查JSON数字字段（冒号后），不检查字符串值内部
+	// 示例错误：{"take_profit": 98,000}
+	// 示例正确：{"reasoning": "target $2,780"} ← 字符串值中的千位分隔符是合法的
+	// 检查模式：": 数字,数字数字数字" 或 ": 数字,数字数字数字"（可能有空格）
+	for i := 0; i < len(jsonStr)-6; i++ {
+		// 查找 ": " 或 ":" 后跟数字
+		if jsonStr[i] == ':' {
+			// 跳过空格
+			j := i + 1
+			for j < len(jsonStr) && jsonStr[j] == ' ' {
+				j++
+			}
+			// 检查是否是数字开头，然后是千位分隔符模式
+			if j < len(jsonStr)-4 &&
+				jsonStr[j] >= '0' && jsonStr[j] <= '9' &&
+				jsonStr[j+1] == ',' &&
+				jsonStr[j+2] >= '0' && jsonStr[j+2] <= '9' &&
+				jsonStr[j+3] >= '0' && jsonStr[j+3] <= '9' &&
+				jsonStr[j+4] >= '0' && jsonStr[j+4] <= '9' {
+				return fmt.Errorf("JSON 数字字段不可包含千位分隔符逗号，发现: %s", jsonStr[j:min(j+10, len(jsonStr))])
+			}
 		}
 	}
 
@@ -818,4 +958,13 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 	}
 
 	return nil
+}
+
+// BuildSystemPromptPreview 对外导出：用于在不调用AI的情况下，基于当前配置实时生成“完整系统提示词”
+// 说明：
+// - accountEquity: 当前账户净值，用于动态生成风险约束区间
+// - btcEthLeverage/altcoinLeverage: 杠杆限制
+// - customPrompt/overrideBase/templateName: 提示词相关配置
+func BuildSystemPromptPreview(accountEquity float64, btcEthLeverage, altcoinLeverage int, customPrompt string, overrideBase bool, templateName string) string {
+	return buildSystemPromptWithCustom(accountEquity, btcEthLeverage, altcoinLeverage, customPrompt, overrideBase, templateName)
 }

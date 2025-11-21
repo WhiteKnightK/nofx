@@ -64,7 +64,9 @@ export interface AccountSnapshot {
 export interface DecisionRecord {
   timestamp: string
   cycle_number: number
+  system_prompt?: string
   input_prompt: string
+  raw_ai_response?: string
   cot_trace: string
   decision_json: string
   account_state: AccountSnapshot

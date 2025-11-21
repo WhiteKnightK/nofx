@@ -288,6 +288,29 @@ func (tm *TraderManager) addTraderFromDB(traderCfg *config.TraderRecord, aiModel
 	return nil
 }
 
+// RemoveTrader 从内存中移除交易员（删除时调用）
+func (tm *TraderManager) RemoveTrader(id string) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	t, exists := tm.traders[id]
+	if !exists {
+		return fmt.Errorf("trader ID '%s' 不存在", id)
+	}
+
+	// 如果正在运行，先停止
+	status := t.GetStatus()
+	if isRunning, ok := status["is_running"].(bool); ok && isRunning {
+		t.Stop()
+		log.Printf("⏸️  Trader '%s' 已停止（删除前自动停止）", id)
+	}
+
+	// 从内存中删除
+	delete(tm.traders, id)
+	log.Printf("🗑️  Trader '%s' 已从内存中移除", id)
+	return nil
+}
+
 // AddTrader 从数据库配置添加trader (移除旧版兼容性)
 
 // AddTraderFromDB 从数据库配置添加trader
@@ -350,6 +373,7 @@ func (tm *TraderManager) AddTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		IsCrossMargin:         traderCfg.IsCrossMargin,
 		DefaultCoins:          defaultCoins,
 		TradingCoins:          tradingCoins,
+		SystemPromptTemplate:  traderCfg.SystemPromptTemplate,
 	}
 
 	// 根据交易所类型设置API密钥
@@ -501,30 +525,31 @@ func (tm *TraderManager) GetComparisonData() (map[string]interface{}, error) {
 
 // GetCompetitionData 获取竞赛数据（全平台所有交易员）
 func (tm *TraderManager) GetCompetitionData() (map[string]interface{}, error) {
-	// 检查缓存是否有效（30秒内）
-	tm.competitionCache.mu.RLock()
-	if time.Since(tm.competitionCache.timestamp) < 30*time.Second && len(tm.competitionCache.data) > 0 {
-		// 返回缓存数据
-		cachedData := make(map[string]interface{})
-		for k, v := range tm.competitionCache.data {
-			cachedData[k] = v
-		}
-		tm.competitionCache.mu.RUnlock()
-		log.Printf("📋 返回竞赛数据缓存 (缓存时间: %.1fs)", time.Since(tm.competitionCache.timestamp).Seconds())
-		return cachedData, nil
-	}
-	tm.competitionCache.mu.RUnlock()
+	// 🔧 修复：移除缓存机制，改为实时获取，确保删除/停止的交易员立即消失
 
 	tm.mu.RLock()
 
-	// 获取所有交易员列表
+	// 🔑 关键修复：只获取正在运行的交易员
 	allTraders := make([]*trader.AutoTrader, 0, len(tm.traders))
+	totalLoaded := len(tm.traders)
+	runningCount := 0
+	
 	for _, t := range tm.traders {
+		status := t.GetStatus()
+		// 严格检查 is_running 状态
+		if isRunning, ok := status["is_running"].(bool); ok && isRunning {
 		allTraders = append(allTraders, t)
+			runningCount++
+		}
 	}
 	tm.mu.RUnlock()
 
-	log.Printf("🔄 重新获取竞赛数据，交易员数量: %d", len(allTraders))
+	log.Printf("🔄 实时获取竞赛数据: 内存中已加载 %d 个交易员，其中正在运行: %d 个", totalLoaded, runningCount)
+	
+	// 如果没有正在运行的交易员，提示用户
+	if runningCount == 0 && totalLoaded > 0 {
+		log.Printf("⚠️ 提示: 当前没有正在运行的交易员，因此排行榜为空。请在控制台启动交易员。")
+	}
 
 	// 并发获取交易员数据
 	traders := tm.getConcurrentTraderData(allTraders)
@@ -552,13 +577,10 @@ func (tm *TraderManager) GetCompetitionData() (map[string]interface{}, error) {
 	comparison := make(map[string]interface{})
 	comparison["traders"] = traders
 	comparison["count"] = len(traders)
-	comparison["total_count"] = totalCount // 总交易员数量
+	comparison["total_count"] = totalCount // 总正在运行的交易员数量
 
-	// 更新缓存
-	tm.competitionCache.mu.Lock()
-	tm.competitionCache.data = comparison
-	tm.competitionCache.timestamp = time.Now()
-	tm.competitionCache.mu.Unlock()
+	// 🔧 修复：不再更新缓存，确保每次都是实时数据
+	// 这样删除或停止的交易员会立即从排行榜消失
 
 	return comparison, nil
 }

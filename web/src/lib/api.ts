@@ -639,4 +639,19 @@ export const api = {
     }
     return await res.json().catch(() => ({}))
   },
+
+  // 获取系统提示词实时预览（每次请求现算，不读缓存）
+  async getPromptPreview(traderId: string): Promise<{
+    system_prompt: string
+    equity_used: number
+    template: string
+    override_base: boolean
+  }> {
+    const res = await httpClient.get(
+      `${API_BASE}/traders/${traderId}/prompt-preview`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取系统提示词预览失败')
+    return res.json()
+  },
 }

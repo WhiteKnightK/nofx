@@ -7,6 +7,7 @@ import (
 	"math"
 	"nofx/decision"
 	"nofx/logger"
+	sysconfig "nofx/config"
 	"nofx/market"
 	"nofx/mcp"
 	"nofx/pool"
@@ -110,6 +111,7 @@ type AutoTrader struct {
 	monitorWg             sync.WaitGroup     // 用于等待监控goroutine结束
 	peakPnLCache          map[string]float64 // 最高收益缓存 (symbol -> 峰值盈亏百分比)
 	peakPnLCacheMutex     sync.RWMutex       // 缓存读写锁
+	mu                    sync.RWMutex       // 提示词配置读写锁（保护customPrompt、overrideBasePrompt、systemPromptTemplate）
 	lastBalanceSyncTime   time.Time          // 上次余额同步时间
 	database              interface{}        // 数据库引用（用于自动更新余额）
 	userID                string             // 用户ID
@@ -419,6 +421,28 @@ func (at *AutoTrader) runCycle() error {
 		Success:      true,
 	}
 
+	// 🔄 强制从数据库同步最新配置（确保Prompt实时生效）
+	if at.database != nil {
+		if db, ok := at.database.(*sysconfig.Database); ok {
+			traderRecord, err := db.GetTraderByID(at.id)
+			if err == nil && traderRecord != nil {
+				at.mu.Lock()
+				// 检查是否有变更，如果有变更则打印日志
+				if at.customPrompt != traderRecord.CustomPrompt || 
+				   at.overrideBasePrompt != traderRecord.OverrideBasePrompt || 
+				   at.systemPromptTemplate != traderRecord.SystemPromptTemplate {
+					log.Printf("🔄 [%s] 检测到配置变更，正在同步: 模板=%s, 覆盖基础=%v", 
+						at.name, traderRecord.SystemPromptTemplate, traderRecord.OverrideBasePrompt)
+				}
+				
+				at.customPrompt = traderRecord.CustomPrompt
+				at.overrideBasePrompt = traderRecord.OverrideBasePrompt
+				at.systemPromptTemplate = traderRecord.SystemPromptTemplate
+				at.mu.Unlock()
+			}
+		}
+	}
+
 	// 1. 检查是否需要停止交易
 	if time.Now().Before(at.stopUntil) {
 		remaining := at.stopUntil.Sub(time.Now())
@@ -482,15 +506,28 @@ func (at *AutoTrader) runCycle() error {
 	log.Printf("📊 账户净值: %.2f USDT | 可用: %.2f USDT | 持仓: %d",
 		ctx.Account.TotalEquity, ctx.Account.AvailableBalance, ctx.Account.PositionCount)
 
-	// 5. 调用AI获取完整决策
-	log.Printf("🤖 正在请求AI分析并决策... [模板: %s]", at.systemPromptTemplate)
-	decision, err := decision.GetFullDecisionWithCustomPrompt(ctx, at.mcpClient, at.customPrompt, at.overrideBasePrompt, at.systemPromptTemplate)
+	// 5. 读取当前提示词配置（加锁保护）
+	at.mu.Lock()
+	customPrompt := at.customPrompt
+	overrideBasePrompt := at.overrideBasePrompt
+	systemPromptTemplate := at.systemPromptTemplate
+	at.mu.Unlock()
+
+	// 6. 调用AI获取完整决策
+	log.Printf("🤖 正在请求AI分析并决策... [模板: %s, 覆盖基础: %v]", systemPromptTemplate, overrideBasePrompt)
+	decision, err := decision.GetFullDecisionWithCustomPrompt(ctx, at.mcpClient, customPrompt, overrideBasePrompt, systemPromptTemplate)
 
 	// 即使有错误，也保存思维链、决策和输入prompt（用于debug）
 	if decision != nil {
-		record.SystemPrompt = decision.SystemPrompt // 保存系统提示词
-		record.InputPrompt = decision.UserPrompt
-		record.CoTTrace = decision.CoTTrace
+		record.SystemPrompt = decision.SystemPrompt   // 保存系统提示词
+		record.InputPrompt = decision.UserPrompt      // 保存输入提示词
+		record.RawAIResponse = decision.RawAIResponse // 保存AI原始响应（未裁剪）
+		record.CoTTrace = decision.CoTTrace           // 保存思维链（裁剪后）
+		
+		// 🔍 调试：打印字段长度确认数据已保存
+		log.Printf("📝 决策记录字段长度: SystemPrompt=%d, InputPrompt=%d, CoTTrace=%d", 
+			len(record.SystemPrompt), len(record.InputPrompt), len(record.CoTTrace))
+		
 		if len(decision.Decisions) > 0 {
 			decisionJSON, _ := json.MarshalIndent(decision.Decisions, "", "  ")
 			record.DecisionJSON = string(decisionJSON)
@@ -522,29 +559,33 @@ func (at *AutoTrader) runCycle() error {
 		return fmt.Errorf("获取AI决策失败: %w", err)
 	}
 
-	// // 5. 打印系统提示词
-	// log.Printf("\n" + strings.Repeat("=", 70))
-	// log.Printf("📋 系统提示词 [模板: %s]", at.systemPromptTemplate)
-	// log.Println(strings.Repeat("=", 70))
-	// log.Println(decision.SystemPrompt)
-	// log.Printf(strings.Repeat("=", 70) + "\n")
+	// 5. 打印系统提示词（用于调试自定义提示词）
+	log.Printf("\n" + strings.Repeat("=", 70))
+	log.Printf("📋 系统提示词（完整版，包含所有部分）")
+	log.Printf("   模板: %s | 自定义提示词: %v | 覆盖基础: %v", 
+		at.systemPromptTemplate, 
+		at.customPrompt != "", 
+		at.overrideBasePrompt)
+	log.Println(strings.Repeat("=", 70))
+	log.Println(decision.SystemPrompt)
+	log.Printf(strings.Repeat("=", 70) + "\n")
 
-	// 6. 打印AI思维链
-	// log.Printf("\n" + strings.Repeat("-", 70))
-	// log.Println("💭 AI思维链分析:")
-	// log.Println(strings.Repeat("-", 70))
-	// log.Println(decision.CoTTrace)
-	// log.Printf(strings.Repeat("-", 70) + "\n")
+	// 6. 打印AI思维链（用于查看AI是否遵循自定义提示词）
+	log.Printf("\n" + strings.Repeat("-", 70))
+	log.Println("💭 AI思维链分析:")
+	log.Println(strings.Repeat("-", 70))
+	log.Println(decision.CoTTrace)
+	log.Printf(strings.Repeat("-", 70) + "\n")
 
 	// 7. 打印AI决策
-	// log.Printf("📋 AI决策列表 (%d 个):\n", len(decision.Decisions))
-	// for i, d := range decision.Decisions {
-	//     log.Printf("  [%d] %s: %s - %s", i+1, d.Symbol, d.Action, d.Reasoning)
-	//     if d.Action == "open_long" || d.Action == "open_short" {
-	//        log.Printf("      杠杆: %dx | 仓位: %.2f USDT | 止损: %.4f | 止盈: %.4f",
-	//           d.Leverage, d.PositionSizeUSD, d.StopLoss, d.TakeProfit)
-	//     }
-	// }
+	log.Printf("📋 AI决策列表 (%d 个):\n", len(decision.Decisions))
+	for i, d := range decision.Decisions {
+		log.Printf("  [%d] %s: %s - %s", i+1, d.Symbol, d.Action, d.Reasoning)
+		if d.Action == "open_long" || d.Action == "open_short" {
+			log.Printf("      杠杆: %dx | 仓位: %.2f USDT | 止损: %.4f | 止盈: %.4f",
+				d.Leverage, d.PositionSizeUSD, d.StopLoss, d.TakeProfit)
+		}
+	}
 	log.Println()
 	log.Print(strings.Repeat("-", 70))
 	// 8. 对决策排序：确保先平仓后开仓（防止仓位叠加超限）
@@ -1262,17 +1303,26 @@ func (at *AutoTrader) GetExchange() string {
 
 // SetCustomPrompt 设置自定义交易策略prompt
 func (at *AutoTrader) SetCustomPrompt(prompt string) {
+	at.mu.Lock()
+	defer at.mu.Unlock()
 	at.customPrompt = prompt
+	log.Printf("🔄 [%s] 自定义提示词已更新", at.name)
 }
 
 // SetOverrideBasePrompt 设置是否覆盖基础prompt
 func (at *AutoTrader) SetOverrideBasePrompt(override bool) {
+	at.mu.Lock()
+	defer at.mu.Unlock()
 	at.overrideBasePrompt = override
+	log.Printf("🔄 [%s] 覆盖基础提示词设置已更新: %v", at.name, override)
 }
 
 // SetSystemPromptTemplate 设置系统提示词模板
 func (at *AutoTrader) SetSystemPromptTemplate(templateName string) {
+	at.mu.Lock()
+	defer at.mu.Unlock()
 	at.systemPromptTemplate = templateName
+	log.Printf("🔄 [%s] 系统提示词模板已更新: %s", at.name, templateName)
 }
 
 // GetSystemPromptTemplate 获取当前系统提示词模板名称

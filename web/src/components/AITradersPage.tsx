@@ -381,8 +381,10 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
 
   // 只在创建交易员时使用已启用且配置完整的
   // 注意：后端返回的数据不包含敏感信息，所以只检查 enabled 状态和必要的非敏感字段
-  const enabledModels = allModels?.filter((m) => m.enabled) || []
-  const enabledExchanges =
+  // 🔧 修复：使用useMemo避免频繁重新创建数组，导致TraderConfigModal表单重置
+  const enabledModels = useMemo(() => allModels?.filter((m) => m.enabled) || [], [allModels])
+  const enabledExchanges = useMemo(
+    () =>
     allExchanges?.filter((e) => {
       if (!e.enabled) return false
 
@@ -403,7 +405,9 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
 
       // 其他交易所：如果已启用，说明已配置完整（后端只返回已配置的交易所）
       return true
-    }) || []
+      }) || [],
+    [allExchanges]
+  )
 
   // 检查模型是否正在被运行中的交易员使用（用于UI禁用）
   const isModelInUse = (modelId: string) => {

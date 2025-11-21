@@ -993,7 +993,12 @@ function TraderDetailsPage({
           >
             {decisions && decisions.length > 0 ? (
               decisions.map((decision, i) => (
-                <DecisionCard key={i} decision={decision} language={language} />
+                <DecisionCard
+                  key={i}
+                  decision={decision}
+                  language={language}
+                  traderId={selectedTrader.trader_id}
+                />
               ))
             ) : (
               <div className="py-16 text-center">
@@ -1074,12 +1079,34 @@ function StatCard({
 function DecisionCard({
   decision,
   language,
+  traderId,
 }: {
   decision: DecisionRecord
   language: Language
+  traderId: string
 }) {
+  const [showSystemPrompt, setShowSystemPrompt] = useState(false)
   const [showInputPrompt, setShowInputPrompt] = useState(false)
   const [showCoT, setShowCoT] = useState(false)
+  const [promptPreview, setPromptPreview] = useState<string | null>(null)
+  const [loadingPreview, setLoadingPreview] = useState(false)
+
+  const handleToggleSystemPrompt = async () => {
+    const next = !showSystemPrompt
+    setShowSystemPrompt(next)
+    if (next) {
+      try {
+        setLoadingPreview(true)
+        const data = await api.getPromptPreview(traderId)
+        setPromptPreview(data.system_prompt || '')
+      } catch (e) {
+        // 失败时回退到记录内的system_prompt
+        setPromptPreview(decision.system_prompt || '')
+      } finally {
+        setLoadingPreview(false)
+      }
+    }
+  }
 
   return (
     <div
@@ -1111,6 +1138,40 @@ function DecisionCard({
           {t(decision.success ? 'success' : 'failed', language)}
         </div>
       </div>
+
+      {/* System Prompt - Collapsible */}
+      {(decision.system_prompt || promptPreview !== null) && (
+        <div className="mb-3">
+          <button
+            onClick={handleToggleSystemPrompt}
+            className="flex items-center gap-2 text-sm transition-colors"
+            style={{ color: '#a78bfa' }}
+          >
+            <span className="font-semibold">
+              🎯 {t('systemPrompt', language)}
+            </span>
+            <span className="text-xs">
+              {showSystemPrompt
+                ? t('collapse', language)
+                : t('expand', language)}
+            </span>
+          </button>
+          {showSystemPrompt && (
+            <div
+              className="mt-2 rounded p-4 text-sm font-mono whitespace-pre-wrap max-h-96 overflow-y-auto"
+              style={{
+                background: '#0B0E11',
+                border: '1px solid #2B3139',
+                color: '#EAECEF',
+              }}
+            >
+              {loadingPreview
+                ? '加载中...'
+                : (promptPreview ?? decision.system_prompt)}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Input Prompt - Collapsible */}
       {decision.input_prompt && (
