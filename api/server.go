@@ -184,8 +184,6 @@ func (s *Server) setupRoutes() {
 			protected.POST("/positions/close", s.handleClosePosition) // 平仓操作
 			protected.GET("/decisions", s.handleDecisions)
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
-			// 实时提示词预览（每次请求现算，不读缓存）
-			protected.GET("/traders/:id/prompt-preview", s.handlePromptPreview)
 			protected.GET("/statistics", s.handleStatistics)
 			protected.GET("/equity-history", s.handleEquityHistory) // 需要认证，使用当前登录用户做权限校验
 			protected.GET("/performance", s.handlePerformance)
@@ -870,15 +868,13 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 	if existingTrader.IsRunning {
 		runningTrader, err := s.traderManager.GetTrader(traderID)
 		if err == nil && runningTrader != nil {
-			// 更新所有可能改变的配置
+			// 更新系统提示词模板（下次 AI 决策时生效）
 			runningTrader.SetSystemPromptTemplate(systemPromptTemplate)
-			runningTrader.SetCustomPrompt(req.CustomPrompt)
-			runningTrader.SetOverrideBasePrompt(req.OverrideBasePrompt)
-			log.Printf("✓ 已更新运行中交易员的配置: 模板=%s, 覆盖基础=%v", systemPromptTemplate, req.OverrideBasePrompt)
+			log.Printf("✓ 已更新运行中交易员的系统提示词模板: %s → %s", existingTrader.SystemPromptTemplate, systemPromptTemplate)
 		}
 	}
 
-	// 重新加载交易员到内存（确保停止的交易员也被更新）
+	// 重新加载交易员到内存
 	err = s.traderManager.LoadUserTraders(s.database, userID)
 	if err != nil {
 		log.Printf("⚠️ 重新加载用户交易员到内存失败: %v", err)
@@ -926,13 +922,6 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 		}
 	}
 
-	// 🔧 修复：先从内存中移除（自动停止），然后从数据库删除
-	// 这样删除的交易员会立即从排行榜消失
-	if err := s.traderManager.RemoveTrader(traderID); err != nil {
-		log.Printf("⚠️ 从内存中移除交易员失败（可能不在内存中）: %v", err)
-		// 即使内存中不存在，也继续删除数据库记录
-	}
-
 	// 从数据库删除
 	err = s.database.DeleteTrader(userID, traderID)
 	if err != nil {
@@ -940,7 +929,16 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 		return
 	}
 
-	log.Printf("✓ 交易员已删除: %s（已从内存和数据库移除）", traderID)
+	// 如果交易员正在运行，先停止它
+	if trader, err := s.traderManager.GetTrader(traderID); err == nil {
+		status := trader.GetStatus()
+		if isRunning, ok := status["is_running"].(bool); ok && isRunning {
+			trader.Stop()
+			log.Printf("⏹  已停止运行中的交易员: %s", traderID)
+		}
+	}
+
+	log.Printf("✓ 交易员已删除: %s", traderID)
 	c.JSON(http.StatusOK, gin.H{"message": "交易员已删除"})
 }
 
@@ -994,31 +992,9 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {
-		// 交易员不在内存中，尝试加载它
-		log.Printf("🔄 [handleStartTrader] 交易员 %s 不在内存中，尝试加载...", traderID)
-		err = s.traderManager.LoadUserTraders(s.database, userID)
-		if err != nil {
-			log.Printf("❌ [handleStartTrader] 加载用户交易员失败: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to load trader: %v", err)})
-			return
-		}
-		
-		// 再次尝试获取交易员
-		trader, err = s.traderManager.GetTrader(traderID)
-		if err != nil {
-			log.Printf("❌ [handleStartTrader] 加载后仍无法找到交易员: %v", err)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Trader not found after loading. Please check AI model and exchange configurations are enabled."})
-			return
-		}
-		log.Printf("✅ [handleStartTrader] 成功加载交易员 %s", traderID)
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
 	}
-
-	// 🔄 确保内存中的配置与数据库同步（特别是Prompt相关）
-	// 即使内存中已存在，也强制使用数据库中的最新配置
-	trader.SetSystemPromptTemplate(traderRecord.SystemPromptTemplate)
-	trader.SetCustomPrompt(traderRecord.CustomPrompt)
-	trader.SetOverrideBasePrompt(traderRecord.OverrideBasePrompt)
-	log.Printf("🔄 [handleStartTrader] 已同步最新配置: 模板=%s, 覆盖基础=%v", traderRecord.SystemPromptTemplate, traderRecord.OverrideBasePrompt)
 
 	// 检查交易员是否已经在运行
 	status := trader.GetStatus()
@@ -1079,23 +1055,8 @@ func (s *Server) handleStopTrader(c *gin.Context) {
 
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {
-		// 交易员不在内存中，尝试加载它
-		log.Printf("🔄 [handleStopTrader] 交易员 %s 不在内存中，尝试加载...", traderID)
-		err = s.traderManager.LoadUserTraders(s.database, userID)
-		if err != nil {
-			log.Printf("❌ [handleStopTrader] 加载用户交易员失败: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to load trader: %v", err)})
-			return
-		}
-		
-		// 再次尝试获取交易员
-		trader, err = s.traderManager.GetTrader(traderID)
-		if err != nil {
-			log.Printf("❌ [handleStopTrader] 加载后仍无法找到交易员: %v", err)
-			c.JSON(http.StatusNotFound, gin.H{"error": "Trader not found after loading. Please check AI model and exchange configurations are enabled."})
-			return
-		}
-		log.Printf("✅ [handleStopTrader] 成功加载交易员 %s", traderID)
+		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
+		return
 	}
 
 	// 检查交易员是否正在运行
@@ -1554,21 +1515,7 @@ func (s *Server) handleUpdateExchangeConfigs(c *gin.Context) {
 
 	// 更新每个交易所的配置
 	for exchangeID, exchangeData := range req.Exchanges {
-		err := s.database.UpdateExchange(
-			userID,
-			exchangeID,
-			exchangeData.Enabled,
-			exchangeData.APIKey,
-			exchangeData.SecretKey,
-			exchangeData.Passphrase,
-			exchangeData.Testnet,
-			exchangeData.HyperliquidWalletAddr,
-			exchangeData.AsterUser,
-			exchangeData.AsterSigner,
-			exchangeData.AsterPrivateKey,
-			exchangeData.Provider,
-			exchangeData.Label,
-		)
+		err := s.database.UpdateExchange(userID, exchangeID, exchangeData.Enabled, exchangeData.APIKey, exchangeData.SecretKey, exchangeData.Passphrase, exchangeData.Testnet, exchangeData.HyperliquidWalletAddr, exchangeData.AsterUser, exchangeData.AsterSigner, exchangeData.AsterPrivateKey, exchangeData.Provider, exchangeData.Label)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("更新交易所 %s 失败: %v", exchangeID, err)})
 			return
@@ -4294,59 +4241,4 @@ func (s *Server) handleUpdateCategoryAccountPassword(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "密码已更新"})
-}
-
-// handlePromptPreview 实时构建"系统提示词（完整）"，不依赖历史记录
-func (s *Server) handlePromptPreview(c *gin.Context) {
-    userID := c.GetString("user_id")
-    traderID := c.Param("id")
-
-    // 获取用户角色
-    user, err := s.database.GetUserByID(userID)
-    if err != nil || user == nil {
-        c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
-        return
-    }
-    role := user.Role
-    if role == "" {
-        role = "user"
-    }
-
-    // 读取数据库中的最新交易员配置
-    tr, err := s.database.GetTraderByID(traderID)
-    if err != nil || tr == nil {
-        c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
-        return
-    }
-    if role != "admin" && tr.OwnerUserID != userID {
-        c.JSON(http.StatusForbidden, gin.H{"error": "只能查看自己的交易员"})
-        return
-    }
-
-    // 账户净值：优先取内存运行实例的实时净值，失败则回退到初始余额
-    accountEquity := tr.InitialBalance
-    if t, err := s.traderManager.GetTrader(traderID); err == nil && t != nil {
-        if acc, err2 := t.GetAccountInfo(); err2 == nil {
-            if eq, ok := acc["total_equity"].(float64); ok && eq > 0 {
-                accountEquity = eq
-            }
-        }
-    }
-
-    // 构建系统提示词（完整）
-    systemPrompt := decision.BuildSystemPromptPreview(
-        accountEquity,
-        tr.BTCETHLeverage,
-        tr.AltcoinLeverage,
-        tr.CustomPrompt,
-        tr.OverrideBasePrompt,
-        tr.SystemPromptTemplate,
-    )
-
-    c.JSON(http.StatusOK, gin.H{
-        "system_prompt": systemPrompt,
-        "equity_used":   accountEquity,
-        "template":      tr.SystemPromptTemplate,
-        "override_base": tr.OverrideBasePrompt,
-    })
 }
