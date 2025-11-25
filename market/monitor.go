@@ -90,7 +90,7 @@ func (m *WSMonitor) initializeHistoricalData() error {
 			defer func() { <-semaphore }()
 
 			// 获取历史K线数据
-			klines, err := apiClient.GetKlines(s, "3m", 100)
+			klines, err := apiClient.GetKlines(s, "5m", 100)
 			if err != nil {
 				log.Printf("获取 %s 历史数据失败: %v", s, err)
 				return

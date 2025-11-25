@@ -531,16 +531,34 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   }
 
   const handleToggleTrader = async (traderId: string, running: boolean) => {
+    // 🚀 Optimistic UI Update (乐观更新)
+    // 立即在本地更新 UI 状态，而不是等待 API 响应
+    // 这样用户会感觉到操作是"即时"的
+    const previousTraders = traders
+    if (traders && traders.length > 0) {
+      const updatedTraders = traders.map(t => 
+        t.trader_id === traderId ? { ...t, is_running: !running } : t
+      )
+      // 更新本地缓存
+      mutateTraders(updatedTraders, false)
+    }
+
     try {
       if (running) {
         await api.stopTrader(traderId)
       } else {
         await api.startTrader(traderId)
       }
+      // 成功后，重新验证数据以确保一致性
       mutateTraders()
     } catch (error) {
       console.error('Failed to toggle trader:', error)
       showToast(t('operationFailed', language), 'error')
+      
+      // ❌ 如果失败，回滚到之前的状态
+      if (previousTraders) {
+        mutateTraders(previousTraders, false)
+      }
     }
   }
 
@@ -1579,7 +1597,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                       {getModelDisplayName(
                         trader.ai_model.split('_').pop() || trader.ai_model
                       )}{' '}
-                      Model • {trader.exchange_id?.toUpperCase()}
+                      Model • {trader.exchange_id?.toUpperCase()} • {trader.scan_interval_minutes || 5}m
                     </div>
                   </div>
                 </div>
@@ -1646,12 +1664,14 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
 
                     {canEdit && (
                       <button
-                        onClick={() =>
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
                           handleToggleTrader(
                             trader.trader_id,
                             trader.is_running || false
                           )
-                        }
+                        }}
                         className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 whitespace-nowrap"
                         style={
                           trader.is_running

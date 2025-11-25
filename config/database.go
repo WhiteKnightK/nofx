@@ -86,11 +86,16 @@ func NewDatabase(dbPath string) (*Database, error) {
 		if err != nil {
 			return nil, fmt.Errorf("打开MySQL数据库失败: %w", err)
 		}
-		// 设置MySQL连接池参数
-		db.SetMaxOpenConns(25)
-		db.SetMaxIdleConns(5)
-		db.SetConnMaxLifetime(5 * time.Minute)
-		log.Printf("✅ 使用MySQL数据库连接")
+		// 设置MySQL连接池参数（优化以解决 connection lost 问题）
+		// 增加最大连接数，适应并发请求
+		db.SetMaxOpenConns(50)
+		// 增加空闲连接数，减少频繁握手
+		db.SetMaxIdleConns(10)
+		// 关键：设置连接生命周期为3分钟（小于MySQL默认的wait_timeout 8小时，也小于常见的防火墙/代理超时）
+		// 这能强制客户端定期丢弃旧连接，避免复用已被服务端或中间件关闭的连接
+		db.SetConnMaxLifetime(3 * time.Minute)
+		db.SetConnMaxIdleTime(1 * time.Minute) // 空闲连接最大存活时间
+		log.Printf("✅ 使用MySQL数据库连接 (连接池已优化)")
 	} else {
 		// SQLite连接（向后兼容）
 		isMySQL = false

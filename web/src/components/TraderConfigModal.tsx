@@ -61,7 +61,7 @@ export function TraderConfigModal({
     use_coin_pool: false,
     use_oi_top: false,
     initial_balance: 1000,
-    scan_interval_minutes: 3,
+    scan_interval_minutes: 5,
   })
   const [isSaving, setIsSaving] = useState(false)
   const [availableCoins, setAvailableCoins] = useState<string[]>([])
@@ -460,21 +460,20 @@ export function TraderConfigModal({
                   <label className="text-sm text-[#EAECEF] block mb-2">
                     {t('aiScanInterval', language)}
                   </label>
-                  <input
-                    type="number"
+                  <select
                     value={formData.scan_interval_minutes}
-                    onChange={(e) => {
-                      const parsedValue = Number(e.target.value)
-                      const safeValue = Number.isFinite(parsedValue)
-                        ? Math.max(1, parsedValue)  // 允许最小1分钟（用于测试）
-                        : 3
-                      handleInputChange('scan_interval_minutes', safeValue)
-                    }}
-                    className="w-full px-3 py-2 bg-[#0B0E11] border border-[#2B3139] rounded text-[#EAECEF] focus:border-[#F0B90B] focus:outline-none"
-                    min="1"
-                    max="60"
-                    step="1"
-                  />
+                    onChange={(e) =>
+                      handleInputChange('scan_interval_minutes', Number(e.target.value))
+                    }
+                    className="w-full px-3 py-2 bg-[#0B0E11] border border-[#2B3139] rounded text-[#EAECEF] focus:border-[#F0B90B] focus:outline-none appearance-none"
+                  >
+                    <option value={1}>⚡ 1 min (极速测试)</option>
+                    <option value={3}>⚡ 3 min (高频剥头皮)</option>
+                    <option value={5}>📈 5 min (标准 K 线 - 推荐)</option>
+                    <option value={15}>🕒 15 min (短线趋势)</option>
+                    <option value={30}>📅 30 min (中线波段)</option>
+                    <option value={60}>📅 1 hour (长线趋势)</option>
+                  </select>
                   <p className="text-xs text-gray-500 mt-1">
                     {t('scanIntervalRecommend', language)}
                   </p>

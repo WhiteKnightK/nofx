@@ -98,6 +98,7 @@ export interface TraderInfo {
   use_oi_top?: boolean
   category?: string
   owner_user_id?: string
+  scan_interval_minutes?: number
 }
 
 export interface AIModel {

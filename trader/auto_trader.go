@@ -278,23 +278,17 @@ func (at *AutoTrader) Run() error {
 	// 启动回撤监控
 	at.startDrawdownMonitor()
 
-	ticker := time.NewTicker(at.config.ScanInterval)
-	defer ticker.Stop()
-
-	// 首次立即执行
-	if err := at.runCycle(); err != nil {
-		log.Printf("❌ 执行失败: %v", err)
-	}
-
+	// 循环执行：等待对齐 -> 执行 -> 等待对齐...
 	for at.isRunning {
-		select {
-		case <-ticker.C:
-			if err := at.runCycle(); err != nil {
-				log.Printf("❌ 执行失败: %v", err)
-			}
-		case <-at.stopMonitorCh:
+		// 1. 等待直到下一个整点间隔（+5秒延迟）以获取闭合K线
+		if !at.waitUntilNextInterval() {
 			log.Printf("[%s] ⏹ 收到停止信号，退出自动交易主循环", at.name)
 			return nil
+		}
+
+		// 2. 执行决策周期
+			if err := at.runCycle(); err != nil {
+				log.Printf("❌ 执行失败: %v", err)
 		}
 	}
 
@@ -310,6 +304,41 @@ func (at *AutoTrader) Stop() {
 	close(at.stopMonitorCh) // 通知监控goroutine停止
 	at.monitorWg.Wait()     // 等待监控goroutine结束
 	log.Println("⏹ 自动交易系统停止")
+}
+
+// waitUntilNextInterval 等待直到下一个时间间隔点（带延迟）
+// 返回 true 表示时间到了可以继续，返回 false 表示收到停止信号
+func (at *AutoTrader) waitUntilNextInterval() bool {
+	now := time.Now()
+	interval := at.config.ScanInterval
+
+	// 计算下一个整点时间
+	// Truncate 向下取整到最近的 interval 倍数
+	// 例如：interval=5m, now=12:03:00 -> truncated=12:00:00 -> next=12:05:00
+	nextTime := now.Truncate(interval).Add(interval)
+
+	// 添加 5 秒延迟，确保交易所 K 线已生成并固定
+	targetTime := nextTime.Add(5 * time.Second)
+
+	// 如果当前时间已经过了 targetTime（极少数情况），则再加一个 interval
+	if targetTime.Before(now) {
+		targetTime = targetTime.Add(interval)
+	}
+
+	waitDuration := targetTime.Sub(now)
+
+	log.Printf("⏳ [%s] 等待对齐 K 线周期: %v 后执行 (目标时间: %s)",
+		at.name, waitDuration.Round(time.Second), targetTime.Format("15:04:05"))
+
+	timer := time.NewTimer(waitDuration)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-at.stopMonitorCh:
+		return false
+	}
 }
 
 // autoSyncBalanceIfNeeded 自动同步余额（每10分钟检查一次，变化>5%才更新）

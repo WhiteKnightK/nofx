@@ -833,7 +833,7 @@ export const translations = {
     cycle: '周期',
     success: '成功',
     failed: '失败',
-    systemPrompt: '🎯 系统提示词（完整）',
+    systemPrompt: '系统提示词（完整）',
     inputPrompt: '输入提示',
     aiThinking: '💭 AI思维链分析',
     collapse: '▼ 收起',

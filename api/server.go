@@ -184,6 +184,8 @@ func (s *Server) setupRoutes() {
 			protected.POST("/positions/close", s.handleClosePosition) // 平仓操作
 			protected.GET("/decisions", s.handleDecisions)
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
+			// 实时提示词预览（每次请求现算，不读缓存）
+			// protected.GET("/traders/:id/prompt-preview", s.handlePromptPreview)
 			protected.GET("/statistics", s.handleStatistics)
 			protected.GET("/equity-history", s.handleEquityHistory) // 需要认证，使用当前登录用户做权限校验
 			protected.GET("/performance", s.handlePerformance)
@@ -679,7 +681,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 	// 设置扫描间隔默认值（移除最小3分钟限制，允许测试用）
 	scanIntervalMinutes := req.ScanIntervalMinutes
 	if scanIntervalMinutes <= 0 {
-		scanIntervalMinutes = 3 // 默认3分钟
+		scanIntervalMinutes = 5 // 默认5分钟
 	}
 	// 注释掉最小3分钟限制，允许设置1分钟用于测试
 	// if scanIntervalMinutes < 3 {
@@ -1712,6 +1714,7 @@ func (s *Server) handleTraderList(c *gin.Context) {
 			"initial_balance": trader.InitialBalance,
 			"category":        trader.Category,    // 添加分类字段
 			"owner_user_id":   trader.OwnerUserID, // 添加所有者用户ID字段
+			"scan_interval_minutes": trader.ScanIntervalMinutes, // 添加扫描间隔字段
 		})
 	}
 
