@@ -32,7 +32,7 @@ type SymbolStats struct {
 }
 
 var WSMonitorCli *WSMonitor
-var subKlineTime = []string{"3m", "4h"} // 管理订阅流的K线周期
+var subKlineTime = []string{"5m", "4h"} // 管理订阅流的K线周期（与系统5m一致）
 
 func NewWSMonitor(batchSize int) *WSMonitor {
 	WSMonitorCli = &WSMonitor{
@@ -97,7 +97,7 @@ func (m *WSMonitor) initializeHistoricalData() error {
 			}
 			if len(klines) > 0 {
 				m.klineDataMap3m.Store(s, klines)
-				log.Printf("已加载 %s 的历史K线数据-3m: %d 条", s, len(klines))
+				log.Printf("已加载 %s 的历史K线数据-5m: %d 条", s, len(klines))
 			}
 			// 获取历史K线数据
 			klines4h, err := apiClient.GetKlines(s, "4h", 100)
@@ -180,7 +180,7 @@ func (m *WSMonitor) handleKlineData(symbol string, ch <-chan []byte, _time strin
 
 func (m *WSMonitor) getKlineDataMap(_time string) *sync.Map {
 	var klineDataMap *sync.Map
-	if _time == "3m" {
+	if _time == "5m" {
 		klineDataMap = &m.klineDataMap3m
 	} else if _time == "4h" {
 		klineDataMap = &m.klineDataMap4h
@@ -248,6 +248,12 @@ func (m *WSMonitor) GetCurrentKlines(symbol string, _time string) ([]Kline, erro
 
 		// 订阅 WebSocket 流
 		subStr := m.subscribeSymbol(symbol, _time)
+		// 确保WS已连接（如果未连接则尝试连接一次）
+		if m.combinedClient.conn == nil {
+			if err := m.combinedClient.Connect(); err != nil {
+				log.Printf("警告: 组合流连接失败: %v", err)
+			}
+		}
 		subErr := m.combinedClient.subscribeStreams(subStr)
 		log.Printf("动态订阅流: %v", subStr)
 		if subErr != nil {
@@ -260,8 +266,45 @@ func (m *WSMonitor) GetCurrentKlines(symbol string, _time string) ([]Kline, erro
 		return result, nil
 	}
 
-	// ✅ FIX: 返回深拷贝而非引用，避免并发竞态条件
+	// ✅ FIX: 返回前进行过期检查，若过期则用API刷新并尝试重订阅
 	klines := value.([]Kline)
+	if len(klines) > 0 {
+		lastClose := time.UnixMilli(klines[len(klines)-1].CloseTime)
+		var ttl time.Duration
+		switch _time {
+		case "5m":
+			ttl = 15 * time.Minute
+		case "3m":
+			ttl = 10 * time.Minute
+		case "4h":
+			ttl = 12 * time.Hour
+		default:
+			ttl = 15 * time.Minute
+		}
+		if time.Since(lastClose) > ttl {
+			log.Printf("⚠️  %s %s K线已过期(上次收盘: %s，超出TTL: %v)，使用API刷新并重订阅",
+				symbol, _time, lastClose.Format(time.RFC3339), ttl)
+			apiClient := NewAPIClient()
+			refreshed, err := apiClient.GetKlines(symbol, _time, 100)
+			if err == nil && len(refreshed) > 0 {
+				m.getKlineDataMap(_time).Store(strings.ToUpper(symbol), refreshed)
+				klines = refreshed
+				// 确保连接并重订阅
+				subStr := m.subscribeSymbol(symbol, _time)
+				if m.combinedClient.conn == nil {
+					if err := m.combinedClient.Connect(); err != nil {
+						log.Printf("警告: 组合流连接失败: %v", err)
+					}
+				}
+				if err := m.combinedClient.subscribeStreams(subStr); err != nil {
+					log.Printf("警告: 过期后重订阅%v分钟K线失败: %v", _time, err)
+				}
+			} else {
+				log.Printf("警告: 刷新 %s %s K线失败: %v (保留旧数据)", symbol, _time, err)
+			}
+		}
+	}
+	// ✅ 返回深拷贝而非引用，避免并发竞态条件
 	result := make([]Kline, len(klines))
 	copy(result, klines)
 	return result, nil

@@ -12,7 +12,10 @@ import (
 	"nofx/crypto"
 	"nofx/decision"
 	"nofx/manager"
+	"nofx/market"
+	"nofx/signal"
 	"nofx/trader"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -141,6 +144,9 @@ func (s *Server) setupRoutes() {
 			protected.POST("/traders/:id/create-account", s.handleCreateTraderAccount)
 			protected.PUT("/traders/:id/account/password", s.handleUpdateTraderAccountPassword)
 			protected.GET("/traders/:id/account", s.handleGetTraderAccount)
+			protected.GET("/traders/:id/strategy-status", s.handleGetTraderStrategyStatus)
+			protected.GET("/traders/:id/strategy-statuses", s.handleGetTraderStrategyStatuses) // 新增：获取所有策略状态
+			protected.GET("/traders/:id/strategy-decisions", s.handleGetStrategyDecisions)
 			protected.DELETE("/traders/:id/account", s.handleDeleteTraderAccount)
 			protected.POST("/traders/:id/category", s.handleSetTraderCategory)
 
@@ -184,6 +190,8 @@ func (s *Server) setupRoutes() {
 			protected.POST("/positions/close", s.handleClosePosition) // 平仓操作
 			protected.GET("/decisions", s.handleDecisions)
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
+			protected.GET("/strategy/active", s.handleGetActiveStrategy) // 获取当前全局策略
+			protected.GET("/strategy/active-list", s.handleGetActiveStrategies) // 新增：获取所有活跃全局策略
 			// 实时提示词预览（每次请求现算，不读缓存）
 			// protected.GET("/traders/:id/prompt-preview", s.handlePromptPreview)
 			protected.GET("/statistics", s.handleStatistics)
@@ -602,7 +610,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取交易所配置失败: %v", err)})
 		return
 	}
-	
+
 	var exchangeProvider string
 	var exchangeCfg *config.ExchangeConfig
 	for _, exchange := range exchanges {
@@ -626,12 +634,12 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 			break
 		}
 	}
-	
+
 	if exchangeCfg == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("交易所配置不存在: %s", req.ExchangeID)})
 		return
 	}
-	
+
 	if !exchangeCfg.Enabled {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "交易所未启用"})
 		return
@@ -866,20 +874,68 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		return
 	}
 
-	// 如果交易员正在运行，更新内存中的配置（立即生效，无需重启）
+	// 如果交易员正在运行，更新内存中的配置
 	if existingTrader.IsRunning {
 		runningTrader, err := s.traderManager.GetTrader(traderID)
 		if err == nil && runningTrader != nil {
-			// 更新系统提示词模板（下次 AI 决策时生效）
-			runningTrader.SetSystemPromptTemplate(systemPromptTemplate)
-			log.Printf("✓ 已更新运行中交易员的系统提示词模板: %s → %s", existingTrader.SystemPromptTemplate, systemPromptTemplate)
-		}
-	}
+			// 如果关键配置变更（扫描间隔、杠杆、资金等），重启Trader
+			needsRestart := false
+			if existingTrader.ScanIntervalMinutes != scanIntervalMinutes {
+				needsRestart = true
+			}
+			if existingTrader.BTCETHLeverage != btcEthLeverage || existingTrader.AltcoinLeverage != altcoinLeverage {
+				needsRestart = true
+			}
+			if existingTrader.InitialBalance != req.InitialBalance {
+				needsRestart = true
+			}
+			if existingTrader.TradingSymbols != req.TradingSymbols {
+				needsRestart = true
+			}
 
-	// 重新加载交易员到内存
-	err = s.traderManager.LoadUserTraders(s.database, userID)
-	if err != nil {
-		log.Printf("⚠️ 重新加载用户交易员到内存失败: %v", err)
+			if needsRestart {
+				log.Printf("🔄 配置变更，正在重启 Trader '%s'...", traderID)
+
+				// 1. 停止当前实例
+				runningTrader.Stop()
+
+				// 2. 从内存中移除
+				s.traderManager.RemoveTrader(traderID)
+
+				// 3. 重新加载配置到内存
+				err = s.traderManager.LoadUserTraders(s.database, userID)
+				if err != nil {
+					log.Printf("❌ 重启 Trader 失败: %v", err)
+				} else {
+					// 4. 按照当前 is_running 状态重新启动该 Trader
+					newTrader, getErr := s.traderManager.GetTrader(traderID)
+					if getErr != nil {
+						log.Printf("⚠️ 重启后获取 Trader 实例失败: %v", getErr)
+					} else {
+						go func() {
+							log.Printf("▶️  重新启动交易员 %s (%s)", traderID, newTrader.GetName())
+							if runErr := newTrader.Run(); runErr != nil {
+								log.Printf("❌ 交易员 %s 运行错误: %v", newTrader.GetName(), runErr)
+							}
+						}()
+
+						if errStatus := s.database.UpdateTraderStatus(userID, traderID, true); errStatus != nil {
+							log.Printf("⚠️ 重启后更新交易员状态失败: %v", errStatus)
+						}
+
+						log.Printf("✅ Trader '%s' 已重启并应用新配置", traderID)
+					}
+				}
+			} else {
+				// 仅更新无需重启的配置 (如 System Prompt)
+				runningTrader.SetSystemPromptTemplate(systemPromptTemplate)
+				log.Printf("✓ 已更新运行中交易员的系统提示词模板: %s → %s", existingTrader.SystemPromptTemplate, systemPromptTemplate)
+			}
+		}
+	} else {
+		// 如果未运行，直接重新加载配置到内存（如果存在）
+		s.traderManager.RemoveTrader(traderID)
+		s.traderManager.LoadUserTraders(s.database, userID)
 	}
 
 	log.Printf("✓ 更新交易员成功: %s (模型: %s, 交易所: %s, 提示词模板: %s)", req.Name, req.AIModelID, req.ExchangeID, systemPromptTemplate)
@@ -948,7 +1004,7 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 func (s *Server) handleStartTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
-	
+
 	// 🔍 调试：记录完整的请求信息
 	log.Printf("🔍 [handleStartTrader] 请求详情:")
 	log.Printf("  - URL路径: %s", c.Request.URL.Path)
@@ -981,7 +1037,7 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
 		return
 	}
-	
+
 	log.Printf("✅ [handleStartTrader] 找到交易员: ID=%s, ExchangeID=%s, AIModelID=%s", traderRecord.ID, traderRecord.ExchangeID, traderRecord.AIModelID)
 
 	// 权限检查：如果不是admin，验证交易员是否属于当前用户
@@ -1706,14 +1762,14 @@ func (s *Server) handleTraderList(c *gin.Context) {
 		// 返回完整的 AIModelID（如 "admin_deepseek"），不要截断
 		// 前端需要完整 ID 来验证模型是否存在（与 handleGetTraderConfig 保持一致）
 		result = append(result, map[string]interface{}{
-			"trader_id":       trader.ID,
-			"trader_name":     trader.Name,
-			"ai_model":        trader.AIModelID, // 使用完整 ID
-			"exchange_id":     trader.ExchangeID,
-			"is_running":      isRunning,
-			"initial_balance": trader.InitialBalance,
-			"category":        trader.Category,    // 添加分类字段
-			"owner_user_id":   trader.OwnerUserID, // 添加所有者用户ID字段
+			"trader_id":             trader.ID,
+			"trader_name":           trader.Name,
+			"ai_model":              trader.AIModelID, // 使用完整 ID
+			"exchange_id":           trader.ExchangeID,
+			"is_running":            isRunning,
+			"initial_balance":       trader.InitialBalance,
+			"category":              trader.Category,            // 添加分类字段
+			"owner_user_id":         trader.OwnerUserID,         // 添加所有者用户ID字段
 			"scan_interval_minutes": trader.ScanIntervalMinutes, // 添加扫描间隔字段
 		})
 	}
@@ -2005,18 +2061,10 @@ func (s *Server) handleDecisions(c *gin.Context) {
 		return
 	}
 
-	trader, err := s.traderManager.GetTrader(traderID)
+	// 使用新版策略数据库
+	records, err := s.database.GetStrategyDecisionHistory(traderID, 10000)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		return
-	}
-
-	// 获取所有历史决策记录（无限制）
-	records, err := trader.GetDecisionLogger().GetLatestRecords(10000)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": fmt.Sprintf("获取决策日志失败: %v", err),
-		})
+		c.JSON(http.StatusOK, []*config.StrategyDecisionHistory{})
 		return
 	}
 
@@ -2031,24 +2079,16 @@ func (s *Server) handleLatestDecisions(c *gin.Context) {
 		return
 	}
 
-	trader, err := s.traderManager.GetTrader(traderID)
+	// 直接从新版策略数据库获取数据，替换原有的自主决策日志
+	// 这样前端不需要改代码，就能显示最新的策略执行记录
+	records, err := s.database.GetStrategyDecisionHistory(traderID, 5)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		return
-	}
-
-	records, err := trader.GetDecisionLogger().GetLatestRecords(5)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": fmt.Sprintf("获取决策日志失败: %v", err),
-		})
-		return
-	}
-
-	// 反转数组，让最新的在前面（用于列表显示）
-	// GetLatestRecords返回的是从旧到新（用于图表），这里需要从新到旧
-	for i, j := 0, len(records)-1; i < j; i, j = i+1, j-1 {
-		records[i], records[j] = records[j], records[i]
+		// 记录详细错误
+		log.Printf("❌ 获取策略决策失败 [trader_id=%s]: %v", traderID, err)
+		// 暂时吞掉错误，返回空数组，避免前端500
+		records = []*config.StrategyDecisionHistory{}
+	} else {
+		log.Printf("🔍 查询决策 [trader_id=%s]: 找到 %d 条记录", traderID, len(records))
 	}
 
 	c.JSON(http.StatusOK, records)
@@ -2506,8 +2546,17 @@ func (s *Server) handleLogin(c *gin.Context) {
 		role = "user" // 默认是普通用户
 	}
 
+	// 检查是否开启了登录2FA验证（默认开启）
+	enable2FA := true
+	if val := os.Getenv("ENABLE_2FA_LOGIN"); val != "" {
+		val = strings.ToLower(val)
+		if val == "false" || val == "0" || val == "off" {
+			enable2FA = false
+		}
+	}
+
 	// 根据角色决定是否需要OTP验证
-	if role == "admin" || role == "user" {
+	if (role == "admin" || role == "user") && enable2FA {
 		// 管理员或普通用户（注册用户）：需要OTP验证
 		if !user.OTPVerified {
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -4244,4 +4293,110 @@ func (s *Server) handleUpdateCategoryAccountPassword(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "密码已更新"})
+}
+
+// handleGetActiveStrategy 获取当前全局活跃策略
+func (s *Server) handleGetActiveStrategy(c *gin.Context) {
+	if signal.GlobalManager == nil {
+		c.JSON(http.StatusOK, gin.H{"strategy": nil})
+		return
+	}
+
+	strat, t := signal.GlobalManager.GetActiveStrategy()
+	if strat == nil {
+		c.JSON(http.StatusOK, gin.H{"strategy": nil})
+		return
+	}
+
+	// 获取最新价格，用于计算进度
+	currentPrice := 0.0
+	marketData, err := market.Get(strat.Symbol)
+	if err == nil {
+		currentPrice = marketData.CurrentPrice
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"strategy":      strat,
+		"updated_at":    t,
+		"current_price": currentPrice,
+	})
+}
+
+// handleGetTraderStrategyStatus 获取交易员的策略执行状态
+func (s *Server) handleGetTraderStrategyStatus(c *gin.Context) {
+	id := c.Param("id")
+	status, err := s.database.GetTraderStrategyStatus(id)
+	if err != nil {
+		// 如果没有记录，返回空对象而不是404，方便前端处理
+		c.JSON(http.StatusOK, gin.H{})
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+// handleGetStrategyDecisions 获取交易员的策略决策历史
+func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
+	id := c.Param("id")
+	userID := c.GetString("user_id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "trader_id is required"})
+		return
+	}
+
+	// 验证交易员是否属于当前用户（兼容多角色：创建者、本体账号、关联的交易员账号、管理员）
+	trader, err := s.database.GetTraderByID(id)
+	if err != nil || trader == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取交易员信息失败"})
+		return
+	}
+
+	// 获取用户角色
+	user, err := s.database.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户不存在"})
+		return
+	}
+
+	role := user.Role
+	if role == "" {
+		role = "user"
+	}
+
+	// admin 可以查看所有交易员
+	if role != "admin" {
+		ownerID := trader.OwnerUserID
+		if ownerID == "" {
+			ownerID = trader.UserID
+		}
+
+		// 允许：创建者、本体 user_id、绑定的 trader_account 用户
+		if userID != ownerID && userID != trader.UserID && userID != trader.TraderAccountID {
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该交易员"})
+			return
+		}
+	}
+
+	// 获取决策历史(默认最近50条)
+	limit := 50
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
+			limit = parsedLimit
+		}
+	}
+
+	decisions, err := s.database.GetStrategyDecisionHistory(id, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取决策历史失败: %v", err)})
+		return
+	}
+
+	// 如果没有记录，返回空数组
+	if decisions == nil {
+		decisions = []*config.StrategyDecisionHistory{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"decisions": decisions,
+		"total":     len(decisions),
+	})
 }

@@ -14,11 +14,15 @@ ARG NGINX_VERSION=alpine
 FROM node:${NODE_VERSION} AS builder
 WORKDIR /build
 
-# 配置 npm 镜像源（加速依赖下载）
-RUN npm config set registry https://registry.npmmirror.com && \
-    npm config set fetch-retries 5 && \
-    npm config set fetch-retry-mintimeout 20000 && \
-    npm config set fetch-retry-maxtimeout 120000
+# 使用兼容 POSIX 的重试逻辑（避免 {1..6} 在 /bin/sh 下产生语法问题）
+RUN set -e; \
+    for attempt in 1 2 3 4 5 6; do \
+      if apk update && apk add --no-cache curl git python3 make g++; then \
+        break; \
+      fi; \
+      echo "Frontend builder attempt $attempt failed, retrying in $((attempt * 5))s..."; \
+      sleep $((attempt * 5)); \
+    done
 
 COPY web/package*.json ./
 RUN npm ci --verbose --prefer-offline --no-audit

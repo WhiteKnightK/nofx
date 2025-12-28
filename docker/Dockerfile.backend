@@ -1,46 +1,52 @@
-# ──────────────────────────────────────────────────────────────
-# Multi-stage Build for NoFx Backend (Go + TA-Lib)
-# ──────────────────────────────────────────────────────────────
+# docker/backend/Dockerfile
 
-# Global Arguments
+# ═══════════════════════════════════════════════════════════════
+# NOFX Backend Dockerfile (Go + TA-Lib)
+# Multi-stage build with shared TA-Lib compilation stage
+# Versions extracted as ARGs for maintainability
+# ═══════════════════════════════════════════════════════════════
+
 ARG GO_VERSION=1.25-alpine
 ARG ALPINE_VERSION=latest
 ARG TA_LIB_VERSION=0.4.0
 
-# TA-Lib Build Stage (Technical Analysis Library)
+# ──────────────────────────────────────────────────────────────
+# TA-Lib Build Stage (shared across builds)
 # ──────────────────────────────────────────────────────────────
 FROM alpine:${ALPINE_VERSION} AS ta-lib-builder
 ARG TA_LIB_VERSION
 
-# 配置国内镜像源（阿里云 HTTP，纯国内环境）
-# RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-#     sed -i 's/https:/http:/g' /etc/apk/repositories
-
 RUN apk update && apk add --no-cache \
     wget tar make gcc g++ musl-dev autoconf automake
 
-WORKDIR /tmp
-# 下载并解压 TA-Lib (使用SourceForge官方源)
-RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
-    tar -xvzf ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
-    rm ta-lib-${TA_LIB_VERSION}-src.tar.gz
-
-WORKDIR /tmp/ta-lib
-# 编译安装 TA-Lib
-# Fix for "config.guess" too old error
-RUN wget -O config.guess 'http://git.savannah.gnu.org/gitweb/?p=config.git;a=blob_plain;f=config.guess;hb=HEAD' && \
-    wget -O config.sub 'http://git.savannah.gnu.org/gitweb/?p=config.git;a=blob_plain;f=config.sub;hb=HEAD' && \
+# 下载 TA-Lib 源代码（纯国内网络尝试）
+# 由于 SourceForge 国内访问不稳定，我们尝试使用 HTTP 协议并增加重试
+# 如果构建仍然失败，建议手动下载 ta-lib-0.4.0-src.tar.gz 到项目根目录并使用 COPY
+RUN set -e; \
+    wget -T 60 -t 5 \
+    "http://prdownloads.sourceforge.net/ta-lib/ta-lib-${TA_LIB_VERSION}-src.tar.gz" \
+    -O ta-lib-${TA_LIB_VERSION}-src.tar.gz || \
+    wget -T 60 -t 5 --no-check-certificate \
+    "https://sourceforge.net/projects/ta-lib/files/ta-lib/0.4.0/ta-lib-${TA_LIB_VERSION}-src.tar.gz/download" \
+    -O ta-lib-${TA_LIB_VERSION}-src.tar.gz || \
+    (echo "下载失败！请手动下载 ta-lib-0.4.0-src.tar.gz 并修改 Dockerfile 使用 COPY 指令" && exit 1) && \
+    tar -xzf ta-lib-${TA_LIB_VERSION}-src.tar.gz && \
+    cd ta-lib && \
+    if [ "$(uname -m)" = "aarch64" ]; then \
+        CONFIG_GUESS=$(find /usr/share -name config.guess | head -1) && \
+        CONFIG_SUB=$(find /usr/share -name config.sub | head -1) && \
+        cp "$CONFIG_GUESS" config.guess && \
+        cp "$CONFIG_SUB" config.sub && \
+        chmod +x config.guess config.sub; \
+    fi && \
     ./configure --prefix=/usr/local && \
-    make && \
-    make install
+    make && make install && \
+    cd .. && rm -rf ta-lib ta-lib-${TA_LIB_VERSION}-src.tar.gz
 
+# ──────────────────────────────────────────────────────────────
 # Backend Build Stage (Go Application)
 # ──────────────────────────────────────────────────────────────
 FROM golang:${GO_VERSION} AS backend-builder
-
-# 配置国内镜像源（阿里云 HTTP，避开 SSL 问题）
-# RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-#     sed -i 's/https:/http:/g' /etc/apk/repositories
 
 RUN apk update && apk add --no-cache git make gcc g++ musl-dev
 
@@ -49,28 +55,17 @@ COPY --from=ta-lib-builder /usr/local /usr/local
 WORKDIR /app
 COPY go.mod go.sum ./
 
-# 配置 Go 代理（纯国内环境，只用七牛云和阿里云）
-ENV GOPROXY=https://goproxy.cn,https://mirrors.aliyun.com/goproxy/,direct
-ENV GOSUMDB=off
-ENV GONOPROXY=
-ENV GONOSUMDB=
-
 RUN go mod download
 
 COPY . .
+RUN CGO_ENABLED=1 GOOS=linux \
+    CGO_CFLAGS="-D_LARGEFILE64_SOURCE" \
+    go build -trimpath -ldflags="-s -w" -o nofx .
 
-# Build the application
-# CGO_ENABLED=1 is required for TA-Lib (C library)
-# -ldflags="-s -w" reduces binary size
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o nofx main.go
-
+# ──────────────────────────────────────────────────────────────
 # Runtime Stage (Minimal Executable Environment)
 # ──────────────────────────────────────────────────────────────
 FROM alpine:${ALPINE_VERSION}
-
-# 配置镜像源（如果国内网络，取消注释下面两行）
-# RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && \
-#     sed -i 's/https:/http:/g' /etc/apk/repositories
 
 RUN apk update && apk add --no-cache ca-certificates tzdata
 

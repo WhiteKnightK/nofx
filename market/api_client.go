@@ -20,6 +20,13 @@ type APIClient struct {
 }
 
 func NewAPIClient() *APIClient {
+	// 🔍 调试代理配置
+	req, _ := http.NewRequest("GET", baseURL, nil)
+	proxy, err := http.ProxyFromEnvironment(req)
+	if err == nil && proxy != nil {
+		log.Printf("🔍 [APIClient] 检测到系统代理: %s", proxy.String())
+	}
+
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}

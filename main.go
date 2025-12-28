@@ -10,7 +10,9 @@ import (
 	"nofx/crypto"
 	"nofx/manager"
 	"nofx/market"
+	"nofx/mcp"
 	"nofx/pool"
+	mysignal "nofx/signal"
 	"os"
 	"os/signal"
 	"strconv"
@@ -287,6 +289,67 @@ func main() {
 	if oiTopAPIURL != "" {
 		pool.SetOITopAPI(oiTopAPIURL)
 		log.Printf("✓ 已配置OI Top API")
+	}
+
+	// 初始化全局 AI 客户端 (用于信号解析)
+	globalMCP := mcp.New()
+	
+	// 1. 尝试从环境变量读取 AI 配置
+	deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
+	if deepSeekKey != "" {
+		globalMCP.SetDeepSeekAPIKey(deepSeekKey, "", "")
+		log.Printf("🤖 全局信号解析器使用 DeepSeek (来自环境变量)")
+	} else {
+		qwenKey := os.Getenv("QWEN_API_KEY")
+		if qwenKey != "" {
+			globalMCP.SetQwenAPIKey(qwenKey, "", "")
+			log.Printf("🤖 全局信号解析器使用 Qwen (来自环境变量)")
+		}
+	}
+
+	// 2. 如果环境变量未配置，尝试从数据库加载 (遍历所有用户的模型)
+	if globalMCP.APIKey == "" {
+		log.Println("🔍 环境变量未配置 AI Key，尝试从数据库加载...")
+		
+		// 尝试获取所有用户，包括 "default"
+		userIDs, _ := database.GetAllUsers()
+		allIDs := append([]string{"default"}, userIDs...)
+		
+		found := false
+		for _, uid := range allIDs {
+			aiModels, err := database.GetAIModels(uid)
+			if err != nil { continue }
+			
+			for _, m := range aiModels {
+				// 查找已启用的 DeepSeek 或 Qwen 模型
+				if m.Enabled && m.APIKey != "" {
+					if m.Provider == "deepseek" {
+						globalMCP.SetDeepSeekAPIKey(m.APIKey, m.CustomAPIURL, m.CustomModelName)
+						log.Printf("🤖 从数据库加载 DeepSeek 配置 (User: %s, ID: %s)", uid, m.ID)
+						found = true
+						break
+					} else if m.Provider == "qwen" {
+						globalMCP.SetQwenAPIKey(m.APIKey, m.CustomAPIURL, m.CustomModelName)
+						log.Printf("🤖 从数据库加载 Qwen 配置 (User: %s, ID: %s)", uid, m.ID)
+						found = true
+						break
+					}
+				}
+			}
+			if found { break }
+		}
+		
+		if globalMCP.APIKey == "" {
+			log.Printf("⚠️ 未找到可用的全局 AI 配置 (环境变量或数据库)，信号解析可能失败")
+		}
+	}
+
+	// 初始化全局策略管理器
+	if err := mysignal.InitGlobalManager(globalMCP); err != nil {
+		log.Printf("⚠️ 信号管理器初始化失败: %v", err)
+	} else {
+		mysignal.GlobalManager.Start()
+		defer mysignal.GlobalManager.Stop()
 	}
 
 	// 创建TraderManager

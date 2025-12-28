@@ -1,5 +1,5 @@
 #!/bin/bash
-# 快速构建并推送镜像脚本
+# NOFX 镜像构建并推送脚本（简单原版，无任何代理/加速配置）
 
 set -e
 
@@ -7,19 +7,19 @@ set -e
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║       NOFX 镜像构建和推送脚本                              ║${NC}"
+echo -e "${BLUE}║              NOFX 镜像构建和推送脚本                       ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# 检查Docker Hub用户名
-if [ -z "$DOCKERHUB_USERNAME" ]; then
-    echo -e "${YELLOW}⚠️  DOCKERHUB_USERNAME 未设置${NC}"
-    read -p "请输入Docker Hub用户名: " DOCKERHUB_USERNAME
-    export DOCKERHUB_USERNAME
-fi
+# 确保在脚本所在目录执行
+cd "$(dirname "$0")"
+
+# 固定 Docker Hub 用户名（你的账号）
+export DOCKERHUB_USERNAME="baimastryke"
 
 # 设置镜像标签（默认使用日期）
 if [ -z "$IMAGE_TAG" ]; then
@@ -33,10 +33,16 @@ export IMAGE_TAG
 export DOCKER_BUILDKIT=1
 export COMPOSE_DOCKER_CLI_BUILD=1
 
+echo -e "${BLUE}🎯 目标仓库: Docker Hub (${DOCKERHUB_USERNAME})${NC}"
+echo ""
+
 # 检查Docker登录状态
-if ! docker info | grep -q "Username"; then
-    echo -e "${YELLOW}🔐 需要登录Docker Hub${NC}"
+echo -e "${YELLOW}🔐 检查 Docker Hub 登录状态...${NC}"
+if ! docker info 2>/dev/null | grep -q "Username"; then
+    echo -e "${YELLOW}需要登录 Docker Hub${NC}"
     docker login
+else
+    echo -e "${GREEN}✅ 已登录 Docker Hub${NC}"
 fi
 
 echo ""
@@ -59,13 +65,16 @@ docker tag nofx-nofx:latest ${DOCKERHUB_USERNAME}/nofx-backend:${IMAGE_TAG}
 docker tag nofx-nofx:latest ${DOCKERHUB_USERNAME}/nofx-backend:latest
 docker tag nofx-nofx-frontend:latest ${DOCKERHUB_USERNAME}/nofx-frontend:${IMAGE_TAG}
 docker tag nofx-nofx-frontend:latest ${DOCKERHUB_USERNAME}/nofx-frontend:latest
+echo -e "${GREEN}✅ 打标签完成${NC}"
 
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}步骤4: 推送镜像到Docker Hub${NC}"
+echo -e "${GREEN}步骤4: 推送镜像到 Docker Hub${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}📦 推送后端镜像...${NC}"
 docker push ${DOCKERHUB_USERNAME}/nofx-backend:${IMAGE_TAG}
 docker push ${DOCKERHUB_USERNAME}/nofx-backend:latest
+echo -e "${BLUE}📦 推送前端镜像...${NC}"
 docker push ${DOCKERHUB_USERNAME}/nofx-frontend:${IMAGE_TAG}
 docker push ${DOCKERHUB_USERNAME}/nofx-frontend:latest
 
@@ -76,7 +85,9 @@ echo -e "${GREEN}╚════════════════════
 echo ""
 echo -e "${BLUE}📦 镜像地址:${NC}"
 echo -e "  后端: ${DOCKERHUB_USERNAME}/nofx-backend:${IMAGE_TAG}"
+echo -e "  后端: ${DOCKERHUB_USERNAME}/nofx-backend:latest"
 echo -e "  前端: ${DOCKERHUB_USERNAME}/nofx-frontend:${IMAGE_TAG}"
+echo -e "  前端: ${DOCKERHUB_USERNAME}/nofx-frontend:latest"
 echo ""
 echo -e "${BLUE}🚀 在服务器上更新:${NC}"
 echo -e "  ssh -i A.pem ubuntu@43.202.115.56"

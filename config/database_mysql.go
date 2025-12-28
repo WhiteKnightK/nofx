@@ -37,6 +37,11 @@ func NewMySQLDatabase(dsn string) (*Database, error) {
 		return nil, fmt.Errorf("创建MySQL表失败: %w", err)
 	}
 
+	// 自动迁移 trader_strategy_status 表结构 (从单策略升级为多策略)
+	if err := database.migrateTraderStrategyStatus(); err != nil {
+		log.Printf("⚠️ 迁移 trader_strategy_status 表结构失败(非致命): %v", err)
+	}
+
 	// 执行数据库迁移（必须在创建表之后，初始化数据之前）
 	if err := database.RunMigrations(); err != nil {
 		return nil, fmt.Errorf("执行数据库迁移失败: %w", err)
@@ -192,6 +197,47 @@ func (d *Database) createMySQLTables() error {
 			INDEX idx_category (category),
 			INDEX idx_owner_user (owner_user_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+		// 交易员策略状态表 (记录跟随执行情况)
+		`CREATE TABLE IF NOT EXISTS trader_strategy_status (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			trader_id VARCHAR(255) NOT NULL,
+			strategy_id VARCHAR(255) NOT NULL DEFAULT '',
+			status VARCHAR(50) DEFAULT 'WAITING', -- WAITING, ENTRY, ADD_1, ADD_2, CLOSED
+			entry_price DOUBLE DEFAULT 0,
+			quantity DOUBLE DEFAULT 0,
+			realized_pnl DOUBLE DEFAULT 0,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			FOREIGN KEY (trader_id) REFERENCES traders(id) ON DELETE CASCADE,
+			UNIQUE KEY uniq_trader_strategy (trader_id, strategy_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+		// 策略决策历史表 (记录每次AI决策,包括WAIT)
+		`CREATE TABLE IF NOT EXISTS strategy_decision_history (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			trader_id VARCHAR(255) NOT NULL,
+			strategy_id VARCHAR(255) NOT NULL,
+			decision_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+			action VARCHAR(255) NOT NULL,
+			symbol VARCHAR(255) NOT NULL,
+			current_price DOUBLE DEFAULT 0,
+			target_price DOUBLE DEFAULT 0,
+			position_side VARCHAR(50) DEFAULT '',
+			position_qty DOUBLE DEFAULT 0,
+			amount_percent DOUBLE DEFAULT 0,
+			reason TEXT DEFAULT '',
+			rsi_1h DOUBLE DEFAULT 0,
+			rsi_4h DOUBLE DEFAULT 0,
+			macd_4h DOUBLE DEFAULT 0,
+			system_prompt TEXT DEFAULT '',
+			input_prompt TEXT DEFAULT '',
+			raw_ai_response TEXT DEFAULT '',
+			execution_success TINYINT(1) DEFAULT 0,
+			execution_error TEXT DEFAULT '',
+			FOREIGN KEY (trader_id) REFERENCES traders(id) ON DELETE CASCADE,
+			INDEX idx_strategy_decision_trader (trader_id, decision_time),
+			INDEX idx_strategy_decision_strategy (strategy_id, decision_time)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 
 	for _, query := range queries {
@@ -201,6 +247,78 @@ func (d *Database) createMySQLTables() error {
 	}
 
 	log.Printf("✅ MySQL数据库表创建成功")
+	return nil
+}
+
+// migrateTraderStrategyStatus 迁移策略状态表结构 (单策略 -> 多策略)
+func (d *Database) migrateTraderStrategyStatus() error {
+	// 1. 检查是否存在旧的结构（trader_id 是 PRIMARY KEY 且没有 id 列）
+	var count int
+	err := d.db.QueryRow(`
+		SELECT COUNT(*) 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+		  AND TABLE_NAME = 'trader_strategy_status' 
+		  AND COLUMN_NAME = 'id'
+	`).Scan(&count)
+	
+	if err != nil {
+		return err
+	}
+
+	// 如果有 id 列，说明已经是最新的或不需要迁移
+	if count > 0 {
+		return nil
+	}
+
+	log.Println("🔄 开始迁移 trader_strategy_status 表结构 (重建表方式)...")
+
+	// 2. 将旧表重命名为备份表
+	d.db.Exec("DROP TABLE IF EXISTS trader_strategy_status_old")
+	
+	_, err = d.db.Exec("RENAME TABLE trader_strategy_status TO trader_strategy_status_old")
+	if err != nil {
+		return fmt.Errorf("重命名旧表失败: %w", err)
+	}
+
+	// 3. 创建新表
+	createTableQuery := `CREATE TABLE IF NOT EXISTS trader_strategy_status (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			trader_id VARCHAR(255) NOT NULL,
+			strategy_id VARCHAR(255) NOT NULL DEFAULT '',
+			status VARCHAR(50) DEFAULT 'WAITING', -- WAITING, ENTRY, ADD_1, ADD_2, CLOSED
+			entry_price DOUBLE DEFAULT 0,
+			quantity DOUBLE DEFAULT 0,
+			realized_pnl DOUBLE DEFAULT 0,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			FOREIGN KEY (trader_id) REFERENCES traders(id) ON DELETE CASCADE,
+			UNIQUE KEY uniq_trader_strategy (trader_id, strategy_id)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+	
+	_, err = d.db.Exec(createTableQuery)
+	if err != nil {
+		// 尝试恢复
+		d.db.Exec("RENAME TABLE trader_strategy_status_old TO trader_strategy_status")
+		return fmt.Errorf("创建新表失败: %w", err)
+	}
+
+	// 4. 迁移旧数据
+	// 假设旧表已有 strategy_id 列 (如果没有会报错，但数据保留在 old 表中)
+	migrateQuery := `
+		INSERT INTO trader_strategy_status (trader_id, strategy_id, status, entry_price, quantity, realized_pnl, updated_at)
+		SELECT trader_id, IFNULL(strategy_id, ''), status, entry_price, quantity, realized_pnl, updated_at
+		FROM trader_strategy_status_old
+	`
+	_, err = d.db.Exec(migrateQuery)
+	if err != nil {
+		log.Printf("⚠️ 迁移旧数据失败: %v. 旧数据保存在 trader_strategy_status_old 中", err)
+	} else {
+		log.Println("✅ 旧数据迁移成功")
+		// 不自动删除旧表，留作备份
+		log.Println("ℹ️ 旧表已备份为 trader_strategy_status_old，请手动删除")
+	}
+
+	log.Println("✅ trader_strategy_status 表结构迁移完成")
 	return nil
 }
 

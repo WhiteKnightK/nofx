@@ -109,11 +109,11 @@ type Decision struct {
 
 // FullDecision AI的完整决策（包含思维链）
 type FullDecision struct {
-	SystemPrompt  string     `json:"system_prompt"`  // 系统提示词（发送给AI的系统prompt）
-	UserPrompt    string     `json:"user_prompt"`    // 发送给AI的输入prompt
+	SystemPrompt  string     `json:"system_prompt"`   // 系统提示词（发送给AI的系统prompt）
+	UserPrompt    string     `json:"user_prompt"`     // 发送给AI的输入prompt
 	RawAIResponse string     `json:"raw_ai_response"` // AI原始响应（未裁剪，包含所有内容）
-	CoTTrace      string     `json:"cot_trace"`      // 思维链分析（从原始响应中提取的部分）
-	Decisions     []Decision `json:"decisions"`      // 具体决策列表
+	CoTTrace      string     `json:"cot_trace"`       // 思维链分析（从原始响应中提取的部分）
+	Decisions     []Decision `json:"decisions"`       // 具体决策列表
 	Timestamp     time.Time  `json:"timestamp"`
 }
 
@@ -146,9 +146,9 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient *mcp.Client, custom
 	}
 
 	decision.Timestamp = time.Now()
-	decision.SystemPrompt = systemPrompt  // 保存系统prompt
-	decision.UserPrompt = userPrompt      // 保存输入prompt
-	decision.RawAIResponse = aiResponse   // 保存AI原始响应
+	decision.SystemPrompt = systemPrompt // 保存系统prompt
+	decision.UserPrompt = userPrompt     // 保存输入prompt
+	decision.RawAIResponse = aiResponse  // 保存AI原始响应
 	return decision, nil
 }
 
@@ -263,13 +263,13 @@ func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinL
 	// 如果覆盖基础prompt且有自定义prompt，使用自定义内容 + 必要的格式要求
 	if overrideBase && customPrompt != "" {
 		var sb strings.Builder
-		
+
 		// 1. 自定义提示词（完全替代基础策略）
 		sb.WriteString(customPrompt)
 		sb.WriteString("\n\n")
 		sb.WriteString(strings.Repeat("=", 80))
 		sb.WriteString("\n\n")
-		
+
 		// 2. 硬约束（必须保留，确保风险控制）
 		sb.WriteString("# 硬约束（风险控制）\n\n")
 		sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
@@ -279,7 +279,7 @@ func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinL
 		sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
 		sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
 		sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
-		
+
 		// 3. 输出格式（必须保留，否则AI无法正确返回JSON）
 		sb.WriteString("# 输出格式 (严格遵守)\n\n")
 		sb.WriteString("**必须使用XML标签 <reasoning> 和 <decision> 标签分隔思维链和决策JSON，避免解析错误**\n\n")
@@ -298,7 +298,7 @@ func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinL
 		sb.WriteString("    \"action\": \"open_long\" | \"open_short\" | \"close_long\" | \"close_short\" | \"hold\" | \"wait\",\n")
 		sb.WriteString("    \"symbol\": \"BTCUSDT\",\n")
 		sb.WriteString("    \"position_size_usd\": 500.0,\n")
-		sb.WriteString("    \"leverage\": 5,\n")
+		sb.WriteString("    \"leverage\": 5, // 请根据配置限制(山寨币/BTC)动态调整，不要死板使用示例值\n")
 		sb.WriteString("    \"stop_loss\": 50000.0,\n")
 		sb.WriteString("    \"take_profit\": 55000.0,\n")
 		sb.WriteString("    \"reasoning\": \"简短说明\"\n")
@@ -309,7 +309,7 @@ func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinL
 		sb.WriteString("- `position_size_usd`: 仓位大小（美元），而非币的数量\n")
 		sb.WriteString("- `stop_loss` 和 `take_profit`: 止损/止盈价格（非百分比）\n")
 		sb.WriteString("- 所有字段名必须小写，用下划线分隔\n")
-		
+
 		return sb.String()
 	}
 
@@ -321,7 +321,7 @@ func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinL
 	// 🔧 关键改进：将个性化策略放在最开头，成为AI最先看到和最重视的内容
 	// 构建顺序：个性化策略(置顶强调) -> 模板核心策略 -> 硬约束 -> 输出格式
 	var sb strings.Builder
-	
+
 	// 1. 🚨 个性化交易策略（最高优先级，置顶强调）
 	sb.WriteString("# 🚨 核心交易策略（最高优先级）\n\n")
 	sb.WriteString("**重要提示：以下是交易员的核心策略指令，必须严格遵守，优先级高于所有其他规则！**\n\n")
@@ -563,7 +563,7 @@ func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthL
 	log.Println(strings.Repeat("=", 70))
 	log.Println(aiResponse)
 	log.Println(strings.Repeat("=", 70))
-	
+
 	// 1. 提取思维链
 	cotTrace := extractCoTTrace(aiResponse)
 
@@ -588,6 +588,12 @@ func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthL
 		CoTTrace:  cotTrace,
 		Decisions: decisions,
 	}, nil
+}
+
+// ExtractDecisionsFromResponse 对外暴露的解析入口：仅提取决策列表，复用内部解析逻辑
+// 【功能】从 AI 原始响应中解析出 Decision 数组，供其他模块复用，保证数据格式/容错行为与主决策引擎一致
+func ExtractDecisionsFromResponse(aiResponse string) ([]Decision, error) {
+	return extractDecisions(aiResponse)
 }
 
 // extractCoTTrace 提取思维链分析

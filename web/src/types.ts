@@ -217,4 +217,38 @@ export interface TraderConfigData {
   initial_balance: number
   scan_interval_minutes: number
   is_running: boolean
+  system_prompt_template?: string
+}
+
+export interface TraderStrategyStatus {
+  trader_id: string
+  strategy_id: string
+  status: string
+  entry_price: number
+  quantity: number
+  realized_pnl: number
+  updated_at: string
+}
+
+export interface StrategyDecisionHistory {
+  id: number
+  trader_id: string
+  strategy_id: string
+  decision_time: string
+  action: string
+  symbol: string
+  current_price: number
+  target_price: number
+  position_side: string
+  position_qty: number
+  amount_percent: number
+  reason: string
+  rsi_1h: number
+  rsi_4h: number
+  macd_4h: number
+  system_prompt: string
+  input_prompt: string
+  raw_ai_response: string
+  execution_success: boolean
+  execution_error: string
 }

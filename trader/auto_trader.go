@@ -3,14 +3,16 @@ package trader
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math"
+	sysconfig "nofx/config"
 	"nofx/decision"
 	"nofx/logger"
-	sysconfig "nofx/config"
 	"nofx/market"
 	"nofx/mcp"
 	"nofx/pool"
+	"nofx/signal"
 	"strings"
 	"sync"
 	"time"
@@ -82,6 +84,9 @@ type AutoTraderConfig struct {
 
 	// 系统提示词模板
 	SystemPromptTemplate string // 系统提示词模板名称（如 "default", "aggressive"）
+
+	// Gmail配置
+	Gmail *sysconfig.GmailConfig
 }
 
 // AutoTrader 自动交易器
@@ -115,6 +120,9 @@ type AutoTrader struct {
 	lastBalanceSyncTime   time.Time          // 上次余额同步时间
 	database              interface{}        // 数据库引用（用于自动更新余额）
 	userID                string             // 用户ID
+
+	// 信号模式状态
+	lastExecutedSignalID string // 上次执行的信号ID
 }
 
 // GetTrader 获取底层交易器接口（用于直接调用交易方法）
@@ -270,13 +278,22 @@ func (at *AutoTrader) Run() error {
 
 	log.Println("🚀 AI驱动自动交易系统启动")
 	log.Printf("💰 初始余额: %.2f USDT", at.initialBalance)
-	log.Printf("⚙️  扫描间隔: %v", at.config.ScanInterval)
-	log.Println("🤖 AI将全权决定杠杆、仓位大小、止损止盈等参数")
-	at.monitorWg.Add(1)
-	defer at.monitorWg.Done()
 
 	// 启动回撤监控
 	at.startDrawdownMonitor()
+
+	at.monitorWg.Add(1)
+	defer at.monitorWg.Done()
+
+	// 模式选择：如果有 Gmail 配置且启用，或者全局信号管理器已启动，则进入信号模式
+	if (at.config.Gmail != nil && at.config.Gmail.Enabled) || signal.GlobalManager != nil {
+		log.Println("📧 模式: 信号跟随模式 (Web3团队策略)")
+		return at.RunSignalMode()
+	}
+
+	// 默认模式：自主决策
+	log.Printf("⚙️  扫描间隔: %v", at.config.ScanInterval)
+	log.Println("🤖 AI将全权决定杠杆、仓位大小、止损止盈等参数")
 
 	// 循环执行：等待对齐 -> 执行 -> 等待对齐...
 	for at.isRunning {
@@ -287,8 +304,8 @@ func (at *AutoTrader) Run() error {
 		}
 
 		// 2. 执行决策周期
-			if err := at.runCycle(); err != nil {
-				log.Printf("❌ 执行失败: %v", err)
+		if err := at.runCycle(); err != nil {
+			log.Printf("❌ 执行失败: %v", err)
 		}
 	}
 
@@ -457,13 +474,13 @@ func (at *AutoTrader) runCycle() error {
 			if err == nil && traderRecord != nil {
 				at.mu.Lock()
 				// 检查是否有变更，如果有变更则打印日志
-				if at.customPrompt != traderRecord.CustomPrompt || 
-				   at.overrideBasePrompt != traderRecord.OverrideBasePrompt || 
-				   at.systemPromptTemplate != traderRecord.SystemPromptTemplate {
-					log.Printf("🔄 [%s] 检测到配置变更，正在同步: 模板=%s, 覆盖基础=%v", 
+				if at.customPrompt != traderRecord.CustomPrompt ||
+					at.overrideBasePrompt != traderRecord.OverrideBasePrompt ||
+					at.systemPromptTemplate != traderRecord.SystemPromptTemplate {
+					log.Printf("🔄 [%s] 检测到配置变更，正在同步: 模板=%s, 覆盖基础=%v",
 						at.name, traderRecord.SystemPromptTemplate, traderRecord.OverrideBasePrompt)
 				}
-				
+
 				at.customPrompt = traderRecord.CustomPrompt
 				at.overrideBasePrompt = traderRecord.OverrideBasePrompt
 				at.systemPromptTemplate = traderRecord.SystemPromptTemplate
@@ -552,11 +569,11 @@ func (at *AutoTrader) runCycle() error {
 		record.InputPrompt = decision.UserPrompt      // 保存输入提示词
 		record.RawAIResponse = decision.RawAIResponse // 保存AI原始响应（未裁剪）
 		record.CoTTrace = decision.CoTTrace           // 保存思维链（裁剪后）
-		
+
 		// 🔍 调试：打印字段长度确认数据已保存
-		log.Printf("📝 决策记录字段长度: SystemPrompt=%d, InputPrompt=%d, CoTTrace=%d", 
+		log.Printf("📝 决策记录字段长度: SystemPrompt=%d, InputPrompt=%d, CoTTrace=%d",
 			len(record.SystemPrompt), len(record.InputPrompt), len(record.CoTTrace))
-		
+
 		if len(decision.Decisions) > 0 {
 			decisionJSON, _ := json.MarshalIndent(decision.Decisions, "", "  ")
 			record.DecisionJSON = string(decisionJSON)
@@ -591,9 +608,9 @@ func (at *AutoTrader) runCycle() error {
 	// 5. 打印系统提示词（用于调试自定义提示词）
 	log.Printf("\n" + strings.Repeat("=", 70))
 	log.Printf("📋 系统提示词（完整版，包含所有部分）")
-	log.Printf("   模板: %s | 自定义提示词: %v | 覆盖基础: %v", 
-		at.systemPromptTemplate, 
-		at.customPrompt != "", 
+	log.Printf("   模板: %s | 自定义提示词: %v | 覆盖基础: %v",
+		at.systemPromptTemplate,
+		at.customPrompt != "",
 		at.overrideBasePrompt)
 	log.Println(strings.Repeat("=", 70))
 	log.Println(decision.SystemPrompt)
@@ -1091,7 +1108,7 @@ func (at *AutoTrader) executeUpdateStopLossWithRecord(decision *decision.Decisio
 	side, _ := targetPosition["side"].(string)
 	positionSide := strings.ToUpper(side)
 	positionAmt, _ := targetPosition["positionAmt"].(float64)
-	
+
 	// 🔑 关键修复：使用 available（可平数量）而不是 positionAmt（总持仓）
 	// 当已有止盈止损单时，available < positionAmt，使用 positionAmt 会导致 43023 "仓位不足" 错误
 	available, ok := targetPosition["available"].(float64)
@@ -1183,7 +1200,7 @@ func (at *AutoTrader) executeUpdateTakeProfitWithRecord(decision *decision.Decis
 	side, _ := targetPosition["side"].(string)
 	positionSide := strings.ToUpper(side)
 	positionAmt, _ := targetPosition["positionAmt"].(float64)
-	
+
 	// 🔑 关键修复：使用 available（可平数量）而不是 positionAmt（总持仓）
 	// 当已有止盈止损单时，available < positionAmt，使用 positionAmt 会导致 43023 "仓位不足" 错误
 	available, ok := targetPosition["available"].(float64)
@@ -1798,4 +1815,567 @@ func (at *AutoTrader) ClearPeakPnLCache(symbol, side string) {
 
 	posKey := symbol + "_" + side
 	delete(at.peakPnLCache, posKey)
+}
+
+// RunSignalMode 运行信号跟随模式 (全局共享策略)
+func (at *AutoTrader) RunSignalMode() error {
+	log.Println("✅ 信号模式已启动，正在等待全局策略...")
+
+	// ⚡️ 智能监听模式：使用配置的扫描频率
+	interval := at.config.ScanInterval
+	if interval <= 0 {
+		interval = 1 * time.Minute
+	}
+	log.Printf("⏳ 信号模式扫描频率: %v", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for at.isRunning {
+		select {
+		case <-ticker.C:
+			// 如果全局管理器未初始化或未启动，等待
+			if signal.GlobalManager == nil {
+				continue
+			}
+
+			// 获取当前所有活跃策略，逐个轮询执行
+			strategies := signal.GlobalManager.ListActiveStrategies()
+			if len(strategies) == 0 {
+				continue
+			}
+
+			for _, snap := range strategies {
+				if snap == nil || snap.Strategy == nil {
+					continue
+				}
+
+				// 执行检查逻辑 (AI 辅助决策)，每个策略单独调用一次
+				at.CheckAndExecuteStrategyWithAI(snap.Strategy)
+			}
+
+		case <-at.stopMonitorCh:
+			log.Println("⏹ 退出信号模式")
+			return nil
+		}
+	}
+	return nil
+}
+
+// CheckAndExecuteStrategy 检查当前状态并执行策略
+func (at *AutoTrader) CheckAndExecuteStrategy(strat *signal.SignalDecision) {
+	// 1. 获取行情
+	marketData, err := market.Get(strat.Symbol)
+	if err != nil {
+		log.Printf("❌ 获取行情失败: %v", err)
+		return
+	}
+
+	// 2. 获取持仓
+	var currentQty float64 = 0
+	var currentSide string = "NONE"
+
+	positions, err := at.trader.GetPositions()
+	if err == nil {
+		for _, pos := range positions {
+			if pos["symbol"] == strat.Symbol {
+				amt := pos["positionAmt"].(float64)
+				if amt != 0 {
+					currentQty = math.Abs(amt)
+					side := pos["side"].(string)
+					currentSide = strings.ToUpper(side)
+				}
+				break
+			}
+		}
+	}
+
+	targetSide := strings.ToUpper(strat.Direction)
+
+	// 3. 执行逻辑
+
+	// A. 如果持有反向仓位 -> 平仓
+	if currentSide != "NONE" && currentSide != targetSide {
+		log.Printf("🔄 [信号执行] 发现反向持仓 (%s)，正在平仓...", currentSide)
+		if currentSide == "LONG" {
+			at.trader.CloseLong(strat.Symbol, 0)
+		} else {
+			at.trader.CloseShort(strat.Symbol, 0)
+		}
+		return
+	}
+
+	// B. 计算期望仓位比例
+	// 基础仓位 (底仓)
+	expectedPercent := 0.2
+
+	// 加上所有已触发的补仓点
+	for _, add := range strat.Adds {
+		triggered := false
+		if targetSide == "LONG" && marketData.CurrentPrice <= add.Price {
+			triggered = true
+		}
+		if targetSide == "SHORT" && marketData.CurrentPrice >= add.Price {
+			triggered = true
+		}
+
+		if triggered {
+			p := add.Percent
+			if p == 0 {
+				p = 0.1
+			} // 默认补 10%
+			expectedPercent += p
+		}
+	}
+
+	// C. 检查是否需要开仓/补仓
+	currentSizeUSD := currentQty * marketData.CurrentPrice
+	// 避免除以0
+	if at.initialBalance <= 0 {
+		at.initialBalance = 1000
+	} // 兜底
+	currentPercent := currentSizeUSD / at.initialBalance
+
+	// 如果当前仓位明显小于期望 (差距 > 5%)
+	if currentPercent < (expectedPercent - 0.05) {
+		diffPercent := expectedPercent - currentPercent
+		action := "ADD"
+		if currentSide == "NONE" {
+			action = "ENTRY"
+		}
+
+		log.Printf("🤖 [策略执行] 目标仓位 %.0f%% | 当前 %.0f%% | 动作: %s (+%.0f%%)",
+			expectedPercent*100, currentPercent*100, action, diffPercent*100)
+
+		at.executeSignalTrade(strat, action, diffPercent, marketData.CurrentPrice)
+	}
+}
+
+// executeSignalTrade 执行信号交易
+func (at *AutoTrader) executeSignalTrade(strat *signal.SignalDecision, actionType string, percent float64, currentPrice float64) {
+	if percent <= 0 {
+		return
+	}
+
+	// 计算下单金额
+	sizeUSD := at.initialBalance * percent
+	quantity := sizeUSD / currentPrice
+	leverage := strat.LeverageRecommend
+	if leverage == 0 {
+		leverage = 5
+	}
+
+	// 确定方向
+	isShort := strings.ToUpper(strat.Direction) == "SHORT"
+
+	log.Printf("🚀 执行 %s: %s 数量: %.4f 杠杆: %d", actionType, strat.Symbol, quantity, leverage)
+
+	var err error
+	if isShort {
+		_, err = at.trader.OpenShort(strat.Symbol, quantity, leverage)
+	} else {
+		_, err = at.trader.OpenLong(strat.Symbol, quantity, leverage)
+	}
+
+	if err != nil {
+		log.Printf("❌ 下单失败: %v", err)
+		return
+	}
+
+	// 设置止盈止损
+	slPrice := strat.StopLoss.Price
+	if len(strat.TakeProfits) > 0 {
+		tpPrice := strat.TakeProfits[0].Price
+		side := "LONG"
+		if isShort {
+			side = "SHORT"
+		}
+
+		// 重新获取总持仓以设置总SL/TP
+		positions, _ := at.trader.GetPositions()
+		totalQty := quantity
+		for _, p := range positions {
+			if p["symbol"] == strat.Symbol {
+				totalQty = math.Abs(p["positionAmt"].(float64))
+				break
+			}
+		}
+
+		if slPrice > 0 {
+			at.trader.SetStopLoss(strat.Symbol, side, totalQty, slPrice)
+		}
+		if tpPrice > 0 {
+			at.trader.SetTakeProfit(strat.Symbol, side, totalQty, tpPrice)
+		}
+	}
+}
+
+// AIExecutionResult AI 执行结果结构
+type AIExecutionResult struct {
+	Action        string  `json:"action"`
+	AmountPercent float64 `json:"amount_percent"`
+	Reason        string  `json:"reason"`
+}
+
+// convertDecisionToExecution 将通用 Decision 结构转换为单币种执行结果
+// 【功能】把老的 Decision JSON 结构适配为当前执行模块使用的结果格式
+func convertDecisionToExecution(decisions []decision.Decision, symbol string, initialBalance float64) AIExecutionResult {
+	// 默认结果：安全等待
+	result := AIExecutionResult{
+		Action:        "WAIT",
+		AmountPercent: 0,
+		Reason:        "AI 未返回有效决策，进入安全等待",
+	}
+
+	if len(decisions) == 0 {
+		return result
+	}
+
+	// 优先匹配当前交易对，其次 ALL 或第一个
+	var chosen *decision.Decision
+	for i := range decisions {
+		d := &decisions[i]
+		if strings.EqualFold(d.Symbol, symbol) {
+			chosen = d
+			break
+		}
+	}
+	if chosen == nil {
+		for i := range decisions {
+			d := &decisions[i]
+			if strings.EqualFold(d.Symbol, "ALL") || d.Symbol == "" {
+				chosen = d
+				break
+			}
+		}
+	}
+	if chosen == nil {
+		chosen = &decisions[0]
+	}
+
+	actionLower := strings.ToLower(chosen.Action)
+	switch actionLower {
+	case "open_long":
+		result.Action = "OPEN_LONG"
+	case "open_short":
+		result.Action = "OPEN_SHORT"
+	case "close_long":
+		result.Action = "CLOSE_LONG"
+	case "close_short":
+		result.Action = "CLOSE_SHORT"
+	case "hold", "wait", "":
+		result.Action = "WAIT"
+	default:
+		// 未知动作一律降级为 WAIT，避免误触发交易
+		result.Action = "WAIT"
+	}
+
+	// 计算资金占比：使用 position_size_usd / initialBalance
+	if chosen.PositionSizeUSD > 0 && initialBalance > 0 {
+		amt := math.Min(chosen.PositionSizeUSD, initialBalance)
+		pct := amt / initialBalance
+		if pct > 1 {
+			pct = 1
+		}
+		if pct < 0 {
+			pct = 0
+		}
+		result.AmountPercent = pct
+	}
+
+	if chosen.Reasoning != "" {
+		result.Reason = chosen.Reasoning
+	} else {
+		result.Reason = "基于策略与当前市场状态的综合判断"
+	}
+
+	return result
+}
+
+// CheckAndExecuteStrategyWithAI 使用AI进行策略执行判断
+func (at *AutoTrader) CheckAndExecuteStrategyWithAI(strat *signal.SignalDecision) {
+	// 0. 检查策略状态 (如果已结束则跳过)
+	if db, ok := at.database.(*sysconfig.Database); ok {
+		status, err := db.GetTraderStrategyStatusByStrategyID(at.id, strat.SignalID)
+		if err == nil && status != nil && status.Status == "CLOSED" {
+			return
+		}
+	}
+
+	// 1. 获取市场数据
+	apiClient := market.NewAPIClient()
+
+	// 获取 1h K线
+	klines1h, err := apiClient.GetKlines(strat.Symbol, "1h", 100)
+	if err != nil {
+		log.Printf("❌ 获取1h K线失败: %v", err)
+		return
+	}
+
+	// 获取 4h K线
+	klines4h, err := apiClient.GetKlines(strat.Symbol, "4h", 100)
+	if err != nil {
+		log.Printf("❌ 获取4h K线失败: %v", err)
+		return
+	}
+
+	// 提取收盘价序列
+	closes1h := make([]float64, len(klines1h))
+	for i, k := range klines1h {
+		closes1h[i] = k.Close
+	}
+
+	closes4h := make([]float64, len(klines4h))
+	for i, k := range klines4h {
+		closes4h[i] = k.Close
+	}
+
+	// 计算指标
+	rsi1h := market.CalculateRSI(closes1h, 14)
+	rsi4h := market.CalculateRSI(closes4h, 14)
+	_, _, macdHist4h := market.CalculateMACD(closes4h)
+
+	currentPrice := closes1h[len(closes1h)-1]
+
+	// 2. 获取当前持仓
+	var currentQty float64 = 0
+	var currentSide string = "NONE"
+	var avgPrice float64 = 0
+	// var unrealizedPnl float64 = 0
+
+	positions, err := at.trader.GetPositions()
+	if err == nil {
+		for _, pos := range positions {
+			if pos["symbol"] == strat.Symbol {
+				amt := pos["positionAmt"].(float64)
+				if amt != 0 {
+					currentQty = math.Abs(amt)
+					side := pos["side"].(string)
+					currentSide = strings.ToUpper(side)
+					avgPrice = pos["entryPrice"].(float64)
+					// unrealizedPnl = pos["unRealizedProfit"].(float64)
+				}
+				break
+			}
+		}
+	}
+
+	// 计算盈亏百分比
+	pnlPercent := 0.0
+	if avgPrice > 0 {
+		if currentSide == "LONG" {
+			pnlPercent = ((currentPrice - avgPrice) / avgPrice) * 100 * float64(strat.LeverageRecommend)
+		} else {
+			pnlPercent = ((avgPrice - currentPrice) / avgPrice) * 100 * float64(strat.LeverageRecommend)
+		}
+	}
+
+	// 3. 准备 Prompt
+	promptContent, err := ioutil.ReadFile("prompts/strategy_executor.txt")
+	if err != nil {
+		log.Printf("❌ 读取Prompt模板失败: %v", err)
+		return
+	}
+
+	prompt := string(promptContent)
+
+	// 替换变量
+	addsBytes, _ := json.Marshal(strat.Adds)
+	addsJson := string(addsBytes)
+
+	prompt = strings.ReplaceAll(prompt, "{{STRATEGY_DIRECTION}}", strat.Direction)
+	prompt = strings.ReplaceAll(prompt, "{{SYMBOL}}", strat.Symbol)
+	prompt = strings.ReplaceAll(prompt, "{{ENTRY_PRICE}}", fmt.Sprintf("%.2f", strat.Entry.PriceTarget))
+	prompt = strings.ReplaceAll(prompt, "{{ADDS_JSON}}", addsJson)
+	prompt = strings.ReplaceAll(prompt, "{{STOP_LOSS}}", fmt.Sprintf("%.2f", strat.StopLoss.Price))
+	prompt = strings.ReplaceAll(prompt, "{{TAKE_PROFITS}}", fmt.Sprintf("%v", strat.TakeProfits))
+
+	prompt = strings.ReplaceAll(prompt, "{{CURRENT_PRICE}}", fmt.Sprintf("%.2f", currentPrice))
+	prompt = strings.ReplaceAll(prompt, "{{RSI_1H}}", fmt.Sprintf("%.2f", rsi1h))
+	prompt = strings.ReplaceAll(prompt, "{{RSI_4H}}", fmt.Sprintf("%.2f", rsi4h))
+	prompt = strings.ReplaceAll(prompt, "{{MACD_4H}}", fmt.Sprintf("%.2f", macdHist4h))
+
+	prompt = strings.ReplaceAll(prompt, "{{CURRENT_POSITION_SIDE}}", currentSide)
+	prompt = strings.ReplaceAll(prompt, "{{CURRENT_POSITION_SIZE}}", fmt.Sprintf("%.4f", currentQty))
+	prompt = strings.ReplaceAll(prompt, "{{AVG_PRICE}}", fmt.Sprintf("%.2f", avgPrice))
+	prompt = strings.ReplaceAll(prompt, "{{UNREALIZED_PNL}}", fmt.Sprintf("%.2f", pnlPercent))
+
+	// 原始策略全文直接给 AI，自主解析，不在本地提取关键字
+	prompt = strings.ReplaceAll(prompt, "{{RAW_STRATEGY_TEXT}}", strat.RawContent)
+
+	// 4. 调用 AI
+	log.Printf("🤖 [AI执行] 正在思考 %s (RSI: %.1f)...", strat.Symbol, rsi1h)
+
+	// 检查 AI Key 是否有效，如果无效尝试重新加载 (防止panic)
+	if at.mcpClient.APIKey == "" {
+		log.Println("⚠️ [Executor] AI Key 丢失，尝试恢复...")
+		// 这里简化处理，实际上应该有一个更好的全局恢复机制
+	}
+
+	resp, err := at.mcpClient.CallWithMessages("你是一个严格的交易执行AI。", prompt)
+	if err != nil {
+		log.Printf("❌ AI调用失败: %v", err)
+		return
+	}
+
+	// 5. 解析结果（完全复用主决策引擎的解析逻辑，保证JSON格式和容错行为一致）
+	decisions, err := decision.ExtractDecisionsFromResponse(resp)
+	if err != nil {
+		log.Printf("❌ 解析AI结果失败: %v", err)
+		return
+	}
+
+	// 5.1 将 Decision 数组适配为当前执行模块使用的结果格式
+	result := convertDecisionToExecution(decisions, strat.Symbol, at.initialBalance)
+
+	log.Printf("🤖 [AI决策] 动作: %s | 比例: %.0f%% | 理由: %s", result.Action, result.AmountPercent*100, result.Reason)
+
+	// 6. 保存决策历史到数据库
+	at.saveStrategyDecisionHistory(strat, &result, currentPrice, rsi1h, rsi4h, macdHist4h, currentSide, currentQty, "你是一个严格的交易执行AI。", prompt, resp)
+
+	// 7. 执行动作
+	at.executeAIAction(result, strat, currentPrice)
+}
+
+// executeAIAction 执行 AI 的决策
+func (at *AutoTrader) executeAIAction(result AIExecutionResult, strat *signal.SignalDecision, currentPrice float64) {
+	if result.Action == "WAIT" {
+		return
+	}
+
+	// 计算金额
+	if at.initialBalance <= 0 {
+		at.initialBalance = 1000
+	}
+	sizeUSD := at.initialBalance * result.AmountPercent
+	quantity := sizeUSD / currentPrice
+	leverage := strat.LeverageRecommend
+	if leverage == 0 {
+		leverage = 5
+	}
+
+	var err error
+
+	switch result.Action {
+	case "OPEN_LONG", "ADD_LONG":
+		if result.AmountPercent > 0 {
+			log.Printf("🚀 执行做多: %.4f (%.0f%%)", quantity, result.AmountPercent*100)
+			_, err = at.trader.OpenLong(strat.Symbol, quantity, leverage)
+		}
+	case "OPEN_SHORT", "ADD_SHORT":
+		if result.AmountPercent > 0 {
+			log.Printf("🚀 执行做空: %.4f (%.0f%%)", quantity, result.AmountPercent*100)
+			_, err = at.trader.OpenShort(strat.Symbol, quantity, leverage)
+		}
+	case "CLOSE_LONG":
+		log.Printf("🔄 执行平多")
+		_, err = at.trader.CloseLong(strat.Symbol, 0) // 全平
+	case "CLOSE_SHORT":
+		log.Printf("🔄 执行平空")
+		_, err = at.trader.CloseShort(strat.Symbol, 0) // 全平
+	}
+
+	if err != nil {
+		log.Printf("❌ 交易执行失败: %v", err)
+	} else {
+		// 成功后设置止盈止损 (如果是开仓/加仓)
+		if strings.Contains(result.Action, "OPEN") || strings.Contains(result.Action, "ADD") {
+			at.setStrategySLTP(strat, quantity)
+			// 更新状态到数据库
+			at.updateStrategyStatus(strat.SignalID, result.Action, currentPrice, quantity, 0)
+		} else if strings.Contains(result.Action, "CLOSE") {
+			// 平仓更新状态
+			at.updateStrategyStatus(strat.SignalID, "CLOSED", 0, 0, 0)
+		}
+	}
+}
+
+// setStrategySLTP 设置策略的止盈止损
+func (at *AutoTrader) setStrategySLTP(strat *signal.SignalDecision, quantity float64) {
+	// 获取最新总持仓
+	positions, _ := at.trader.GetPositions()
+	totalQty := quantity
+	for _, p := range positions {
+		if p["symbol"] == strat.Symbol {
+			totalQty = math.Abs(p["positionAmt"].(float64))
+			break
+		}
+	}
+
+	slPrice := strat.StopLoss.Price
+	side := "LONG"
+	if strat.Direction == "SHORT" {
+		side = "SHORT"
+	}
+
+	if slPrice > 0 {
+		at.trader.SetStopLoss(strat.Symbol, side, totalQty, slPrice)
+	}
+
+	if len(strat.TakeProfits) > 0 {
+		tpPrice := strat.TakeProfits[0].Price
+		if tpPrice > 0 {
+			at.trader.SetTakeProfit(strat.Symbol, side, totalQty, tpPrice)
+		}
+	}
+}
+
+// updateStrategyStatus 更新策略执行状态到数据库
+func (at *AutoTrader) updateStrategyStatus(stratID, status string, entryPrice, quantity, realizedPnL float64) {
+	if at.database == nil {
+		return
+	}
+
+	if db, ok := at.database.(*sysconfig.Database); ok {
+		s := &sysconfig.TraderStrategyStatus{
+			TraderID:    at.id,
+			StrategyID:  stratID,
+			Status:      status,
+			EntryPrice:  entryPrice,
+			Quantity:    quantity,
+			RealizedPnL: realizedPnL,
+		}
+		if err := db.UpdateTraderStrategyStatus(s); err != nil {
+			log.Printf("⚠️ 更新策略状态失败: %v", err)
+		}
+	}
+}
+
+// saveStrategyDecisionHistory 保存策略决策历史
+func (at *AutoTrader) saveStrategyDecisionHistory(strat *signal.SignalDecision, result *AIExecutionResult, currentPrice, rsi1h, rsi4h, macd4h float64, positionSide string, positionQty float64, systemPrompt, inputPrompt, rawResponse string) {
+	if at.database == nil {
+		return
+	}
+
+	db, ok := at.database.(*sysconfig.Database)
+	if !ok {
+		return
+	}
+
+	history := &sysconfig.StrategyDecisionHistory{
+		TraderID:         at.id,
+		StrategyID:       strat.SignalID,
+		DecisionTime:     time.Now(),
+		Action:           result.Action,
+		Symbol:           strat.Symbol,
+		CurrentPrice:     currentPrice,
+		TargetPrice:      strat.Entry.PriceTarget,
+		PositionSide:     positionSide,
+		PositionQty:      positionQty,
+		AmountPercent:    result.AmountPercent,
+		Reason:           result.Reason,
+		RSI1H:            rsi1h,
+		RSI4H:            rsi4h,
+		MACD4H:           macd4h,
+		SystemPrompt:     systemPrompt,
+		InputPrompt:      inputPrompt,
+		RawAIResponse:    rawResponse,
+		ExecutionSuccess: false, // 默认false,执行后会更新
+		ExecutionError:   "",
+	}
+
+	if err := db.SaveStrategyDecision(history); err != nil {
+		log.Printf("⚠️ 保存决策历史失败: %v", err)
+	} else {
+		log.Printf("📝 已保存决策历史: %s | %s | ID: %d", result.Action, strat.Symbol, history.ID)
+	}
 }

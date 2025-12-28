@@ -102,13 +102,12 @@ export default function AboutSection({ language }: AboutSectionProps) {
             >
               <Typewriter
                 lines={[
-                  '$ git clone https://github.com/tinkle-community/nofx.git',
-                  '$ cd nofx',
-                  '$ chmod +x start.sh',
-                  '$ ./start.sh start --build',
-                  t('startupMessages1', language),
-                  t('startupMessages2', language),
-                  t('startupMessages3', language),
+                  '> Initializing NoFX Core System...',
+                  '> Loading Strategy Modules... [OK]',
+                  '> Connecting to Exchange API... [OK]',
+                  '> AI Neural Network Loaded (Model: DeepSeek-V3)',
+                  '> Risk Management Module: Active',
+                  '> System Ready. Waiting for signals...',
                 ]}
                 typingSpeed={70}
                 lineDelay={900}

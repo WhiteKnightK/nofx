@@ -27,6 +27,15 @@ type TelegramConfig struct {
 	MinLevel string `json:"min_level"` // 最低日志级别，该级别及以上的日志会推送到Telegram（可选，默认: error）
 }
 
+// GmailConfig Gmail监听配置
+type GmailConfig struct {
+	Enabled  bool   `json:"enabled"`  // 是否启用
+	User     string `json:"user"`     // 邮箱地址
+	Password string `json:"password"` // 应用专用密码
+	Host     string `json:"host"`     // IMAP服务器地址 (默认: imap.gmail.com)
+	Port     int    `json:"port"`     // IMAP端口 (默认: 993)
+}
+
 // Config 总配置
 type Config struct {
 	BetaMode           bool           `json:"beta_mode"`
@@ -41,7 +50,8 @@ type Config struct {
 	Leverage           LeverageConfig `json:"leverage"`
 	JWTSecret          string         `json:"jwt_secret"`
 	DataKLineTime      string         `json:"data_k_line_time"`
-	Log                *LogConfig     `json:"log"` // 日志配置
+	Log                *LogConfig     `json:"log"`   // 日志配置
+	Gmail              *GmailConfig   `json:"gmail"` // Gmail配置
 }
 
 // LoadConfig 从文件加载配置

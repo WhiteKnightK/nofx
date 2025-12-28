@@ -1,7 +1,0 @@
-FROM golang:1.23-alpine AS backend-builder
-
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories
-
-RUN apk update && apk add --no-cache git make gcc g++ musl-dev
-
-

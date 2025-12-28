@@ -654,4 +654,56 @@ export const api = {
     if (!res.ok) throw new Error('获取系统提示词预览失败')
     return res.json()
   },
+
+  // 获取当前全局活跃策略
+  async getActiveStrategy(): Promise<{
+    strategy: any
+    updated_at: string
+    current_price: number
+  }> {
+    const res = await httpClient.get(`${API_BASE}/strategy/active`, getAuthHeaders())
+    if (!res.ok) throw new Error('获取策略失败')
+    return res.json()
+  },
+
+  // 获取所有活跃全局策略列表
+  async getActiveStrategies(): Promise<Array<{
+    strategy: any
+    updated_at: string
+    current_price: number
+  }>> {
+    const res = await httpClient.get(`${API_BASE}/strategy/active-list`, getAuthHeaders())
+    if (!res.ok) throw new Error('获取策略列表失败')
+    return res.json()
+  },
+
+  // 获取交易员策略状态
+  async getTraderStrategyStatus(traderId: string): Promise<any> {
+    const res = await httpClient.get(
+      `${API_BASE}/traders/${traderId}/strategy-status`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取交易员策略状态失败')
+    return res.json()
+  },
+
+  // 获取交易员所有策略状态列表
+  async getTraderStrategyStatuses(traderId: string): Promise<any[]> {
+    const res = await httpClient.get(
+      `${API_BASE}/traders/${traderId}/strategy-statuses`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取交易员策略状态列表失败')
+    return res.json()
+  },
+
+  // 获取策略决策历史
+  async getStrategyDecisions(traderId: string, limit: number = 50): Promise<any> {
+    const res = await httpClient.get(
+      `${API_BASE}/traders/${traderId}/strategy-decisions?limit=${limit}`,
+      getAuthHeaders()
+    )
+    if (!res.ok) throw new Error('获取策略决策历史失败')
+    return res.json()
+  },
 }

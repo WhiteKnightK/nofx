@@ -31,6 +31,13 @@ func NewCombinedStreamsClient(batchSize int) *CombinedStreamsClient {
 }
 
 func (c *CombinedStreamsClient) Connect() error {
+	// 🔍 调试代理配置
+	req, _ := http.NewRequest("GET", "https://fstream.binance.com", nil)
+	proxy, err := http.ProxyFromEnvironment(req)
+	if err == nil && proxy != nil {
+		log.Printf("🔍 [WSClient] 检测到系统代理: %s", proxy.String())
+	}
+
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 		Proxy:            http.ProxyFromEnvironment, // 支持从环境变量读取代理
@@ -126,6 +133,10 @@ func (c *CombinedStreamsClient) readMessages() {
 				time.Sleep(1 * time.Second)
 				continue
 			}
+
+			// 设置读取超时，防止僵尸连接
+			// Binance 每3分钟发送一次 Ping，如果超过 5 分钟没收到任何数据（包括 Ping），认为连接断开
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 
 			_, message, err := conn.ReadMessage()
 			if err != nil {

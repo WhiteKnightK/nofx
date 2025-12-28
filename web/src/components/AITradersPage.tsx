@@ -1546,7 +1546,22 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
           <div className="space-y-4 md:space-y-5">
             {(() => {
               const grouped = groupTradersByCategory()
-              return Object.entries(grouped).map(([categoryName, categoryTraders]) => (
+
+              // 为了避免「当前交易员」列表顺序跳来跳去，这里对分类名和分类内的交易员都做一次稳定排序
+              const categoryNames = Object.keys(grouped).sort((a, b) => {
+                // 「未分类」始终放在最后
+                if (a === '未分类') return 1
+                if (b === '未分类') return -1
+                return a.localeCompare(b, 'zh-CN')
+              })
+
+              return categoryNames.map((categoryName) => {
+                const originalTraders = grouped[categoryName] || []
+                const categoryTraders = [...originalTraders].sort((a, b) =>
+                  a.trader_name.localeCompare(b.trader_name, 'zh-CN')
+                )
+
+                return (
                 <div key={categoryName} className="space-y-2 md:space-y-3">
                   {/* 分类标题 */}
                   <div className="flex items-center gap-2">
@@ -1559,7 +1574,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                     </span>
                   </div>
                   
-                  {/* 该分类下的交易员 */}
+                  {/* 该分类下的交易员（名称排序后稳定展示） */}
                   <div className="space-y-2 md:space-y-3">
                     {categoryTraders.map((trader) => (
               <div
@@ -1594,10 +1609,9 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                           : '#c084fc',
                       }}
                     >
-                      {getModelDisplayName(
-                        trader.ai_model.split('_').pop() || trader.ai_model
-                      )}{' '}
-                      Model • {trader.exchange_id?.toUpperCase()} • {trader.scan_interval_minutes || 5}m
+                      <span className="flex items-center gap-1">
+                         📡 Following Global Strategy • {trader.exchange_id?.toUpperCase()}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1745,10 +1759,11 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                   </div>
                 </div>
               </div>
-            ))}
+                    ))}
                   </div>
                 </div>
-              ))
+                )
+              })
             })()}
           </div>
         ) : (

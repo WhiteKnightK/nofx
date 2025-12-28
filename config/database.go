@@ -146,19 +146,22 @@ func NewDatabase(dbPath string) (*Database, error) {
 func (d *Database) createTables(isMySQL bool) error {
 	// 根据数据库类型选择合适的数据类型和语法
 	var (
-		textType     string
-		boolType     string
-		datetimeFunc string
+		textType          string
+		boolType          string
+		datetimeFunc      string
+		autoIncrementType string
 	)
 
 	if isMySQL {
 		textType = "VARCHAR(255)"
 		boolType = "TINYINT(1)"
 		datetimeFunc = "CURRENT_TIMESTAMP"
+		autoIncrementType = "AUTO_INCREMENT"
 	} else {
 		textType = "TEXT"
 		boolType = "BOOLEAN"
 		datetimeFunc = "CURRENT_TIMESTAMP"
+		autoIncrementType = "AUTOINCREMENT"
 	}
 
 	queries := []string{
@@ -286,6 +289,51 @@ func (d *Database) createTables(isMySQL bool) error {
 			UNIQUE(group_leader_id, category)
 		)`,
 
+		// 交易员策略状态表 (记录跟随执行情况 - 升级版: 支持多策略)
+		`CREATE TABLE IF NOT EXISTS trader_strategy_status (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			trader_id TEXT NOT NULL,
+			strategy_id TEXT DEFAULT '',
+			status TEXT DEFAULT 'WAITING', -- WAITING, ENTRY, ADD_1, ADD_2, CLOSED
+			entry_price REAL DEFAULT 0,
+			quantity REAL DEFAULT 0,
+			realized_pnl REAL DEFAULT 0,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (trader_id) REFERENCES traders(id) ON DELETE CASCADE,
+			UNIQUE(trader_id, strategy_id)
+		)`,
+
+		// 策略决策历史表 (记录每次AI决策,包括WAIT)
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS strategy_decision_history (
+			id %s PRIMARY KEY %s,
+			trader_id %s NOT NULL,
+			strategy_id %s NOT NULL,
+			decision_time DATETIME DEFAULT %s,
+			action %s NOT NULL,
+			symbol %s NOT NULL,
+			current_price REAL DEFAULT 0,
+			target_price REAL DEFAULT 0,
+			position_side %s DEFAULT '',
+			position_qty REAL DEFAULT 0,
+			amount_percent REAL DEFAULT 0,
+			reason %s DEFAULT '',
+			rsi_1h REAL DEFAULT 0,
+			rsi_4h REAL DEFAULT 0,
+			macd_4h REAL DEFAULT 0,
+			execution_success %s DEFAULT 0,
+			execution_error %s DEFAULT '',
+			FOREIGN KEY (trader_id) REFERENCES traders(id) ON DELETE CASCADE
+		)`, func() string {
+			if isMySQL {
+				return "BIGINT"
+			}
+			return "INTEGER"
+		}(), autoIncrementType, textType, textType, datetimeFunc, textType, textType, textType, textType, boolType, textType),
+
+		// 为策略决策历史表创建索引
+		`CREATE INDEX IF NOT EXISTS idx_strategy_decision_trader ON strategy_decision_history(trader_id, decision_time DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_strategy_decision_strategy ON strategy_decision_history(strategy_id, decision_time DESC)`,
+
 		// 触发器：自动更新 updated_at
 		`CREATE TRIGGER IF NOT EXISTS update_users_updated_at
 			AFTER UPDATE ON users
@@ -352,6 +400,9 @@ func (d *Database) createTables(isMySQL bool) error {
 		`ALTER TABLE traders ADD COLUMN system_prompt_template TEXT DEFAULT 'default'`, // 系统提示词模板名称
 		`ALTER TABLE ai_models ADD COLUMN custom_api_url TEXT DEFAULT ''`,              // 自定义API地址
 		`ALTER TABLE ai_models ADD COLUMN custom_model_name TEXT DEFAULT ''`,           // 自定义模型名称
+		`ALTER TABLE strategy_decision_history ADD COLUMN system_prompt TEXT DEFAULT ''`,
+		`ALTER TABLE strategy_decision_history ADD COLUMN input_prompt TEXT DEFAULT ''`,
+		`ALTER TABLE strategy_decision_history ADD COLUMN raw_ai_response TEXT DEFAULT ''`,
 		// 多用户观测系统扩展字段
 		`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`,              // 用户角色: 'admin' | 'user' | 'group_leader' | 'trader_account'
 		`ALTER TABLE users ADD COLUMN trader_id TEXT DEFAULT NULL`,           // 交易员账号关联的交易员ID
@@ -2155,4 +2206,211 @@ func (d *Database) DeleteUser(userID string) error {
 func (d *Database) DeleteGroupLeaderCategories(groupLeaderID string) error {
 	_, err := d.db.Exec(`DELETE FROM group_leader_categories WHERE group_leader_id = ?`, groupLeaderID)
 	return err
+}
+
+// TraderStrategyStatus 交易员策略状态
+type TraderStrategyStatus struct {
+	ID          int64     `json:"id"`
+	TraderID    string    `json:"trader_id"`
+	StrategyID  string    `json:"strategy_id"`
+	Status      string    `json:"status"`
+	EntryPrice  float64   `json:"entry_price"`
+	Quantity    float64   `json:"quantity"`
+	RealizedPnL float64   `json:"realized_pnl"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// StrategyDecisionHistory 策略决策历史
+type StrategyDecisionHistory struct {
+	ID               int64     `json:"id"`
+	TraderID         string    `json:"trader_id"`
+	StrategyID       string    `json:"strategy_id"`
+	DecisionTime     time.Time `json:"decision_time"`
+	Action           string    `json:"action"`
+	Symbol           string    `json:"symbol"`
+	CurrentPrice     float64   `json:"current_price"`
+	TargetPrice      float64   `json:"target_price"`
+	PositionSide     string    `json:"position_side"`
+	PositionQty      float64   `json:"position_qty"`
+	AmountPercent    float64   `json:"amount_percent"`
+	Reason           string    `json:"reason"`
+	RSI1H            float64   `json:"rsi_1h"`
+	RSI4H            float64   `json:"rsi_4h"`
+	MACD4H           float64   `json:"macd_4h"`
+	SystemPrompt     string    `json:"system_prompt"`
+	InputPrompt      string    `json:"input_prompt"`
+	RawAIResponse    string    `json:"raw_ai_response"`
+	ExecutionSuccess bool      `json:"execution_success"`
+	ExecutionError   string    `json:"execution_error"`
+}
+
+// UpdateTraderStrategyStatus 更新策略状态
+func (d *Database) UpdateTraderStrategyStatus(status *TraderStrategyStatus) error {
+	var query string
+	if d.isMySQL {
+		query = `
+			INSERT INTO trader_strategy_status (trader_id, strategy_id, status, entry_price, quantity, realized_pnl, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE
+			status=VALUES(status),
+			entry_price=VALUES(entry_price),
+			quantity=VALUES(quantity),
+			realized_pnl=VALUES(realized_pnl),
+			updated_at=VALUES(updated_at)
+		`
+	} else {
+		query = `
+			INSERT INTO trader_strategy_status (trader_id, strategy_id, status, entry_price, quantity, realized_pnl, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(trader_id, strategy_id) DO UPDATE SET
+			status=excluded.status,
+			entry_price=excluded.entry_price,
+			quantity=excluded.quantity,
+			realized_pnl=excluded.realized_pnl,
+			updated_at=excluded.updated_at
+		`
+	}
+
+	_, err := d.db.Exec(query, status.TraderID, status.StrategyID, status.Status, status.EntryPrice, status.Quantity, status.RealizedPnL, time.Now())
+	return err
+}
+
+// GetTraderStrategyStatuses 获取交易员的所有策略状态
+func (d *Database) GetTraderStrategyStatuses(traderID string) ([]*TraderStrategyStatus, error) {
+	query := `SELECT id, trader_id, strategy_id, status, entry_price, quantity, realized_pnl, updated_at FROM trader_strategy_status WHERE trader_id = ?`
+	rows, err := d.db.Query(query, traderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*TraderStrategyStatus
+	for rows.Next() {
+		var s TraderStrategyStatus
+		if err := rows.Scan(&s.ID, &s.TraderID, &s.StrategyID, &s.Status, &s.EntryPrice, &s.Quantity, &s.RealizedPnL, &s.UpdatedAt); err != nil {
+			return nil, err
+		}
+		results = append(results, &s)
+	}
+	return results, nil
+}
+
+// GetTraderStrategyStatus (Deprecated: use GetTraderStrategyStatuses) 获取策略状态 (返回最新的一个，兼容旧接口)
+func (d *Database) GetTraderStrategyStatus(traderID string) (*TraderStrategyStatus, error) {
+	statuses, err := d.GetTraderStrategyStatuses(traderID)
+	if err != nil {
+		return nil, err
+	}
+	if len(statuses) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	// 返回最新的一个
+	return statuses[len(statuses)-1], nil
+}
+
+// SaveStrategyDecision 保存策略决策历史
+func (d *Database) SaveStrategyDecision(history *StrategyDecisionHistory) error {
+	query := `
+		INSERT INTO strategy_decision_history (
+			trader_id, strategy_id, decision_time, action, symbol,
+			current_price, target_price, position_side, position_qty,
+			amount_percent, reason, rsi_1h, rsi_4h, macd_4h,
+			system_prompt, input_prompt, raw_ai_response,
+			execution_success, execution_error
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	_, err := d.db.Exec(query,
+		history.TraderID, history.StrategyID, history.DecisionTime, history.Action, history.Symbol,
+		history.CurrentPrice, history.TargetPrice, history.PositionSide, history.PositionQty,
+		history.AmountPercent, history.Reason, history.RSI1H, history.RSI4H, history.MACD4H,
+		history.SystemPrompt, history.InputPrompt, history.RawAIResponse,
+		history.ExecutionSuccess, history.ExecutionError,
+	)
+	return err
+}
+
+// GetStrategyDecisionHistory 获取策略决策历史(按时间倒序,支持分页)
+func (d *Database) GetStrategyDecisionHistory(traderID string, limit int) ([]*StrategyDecisionHistory, error) {
+	if limit <= 0 {
+		limit = 50 // 默认50条
+	}
+	
+	query := `
+		SELECT id, trader_id, strategy_id, decision_time, action, symbol,
+		       current_price, target_price, position_side, position_qty,
+		       amount_percent, reason, rsi_1h, rsi_4h, macd_4h,
+		       system_prompt, input_prompt, raw_ai_response,
+		       execution_success, execution_error
+		FROM strategy_decision_history
+		WHERE trader_id = ?
+		ORDER BY decision_time DESC
+		LIMIT ?
+	`
+	
+	rows, err := d.db.Query(query, traderID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var histories []*StrategyDecisionHistory
+	for rows.Next() {
+		h := &StrategyDecisionHistory{}
+		err := rows.Scan(
+			&h.ID, &h.TraderID, &h.StrategyID, &h.DecisionTime, &h.Action, &h.Symbol,
+			&h.CurrentPrice, &h.TargetPrice, &h.PositionSide, &h.PositionQty,
+			&h.AmountPercent, &h.Reason, &h.RSI1H, &h.RSI4H, &h.MACD4H,
+			&h.SystemPrompt, &h.InputPrompt, &h.RawAIResponse,
+			&h.ExecutionSuccess, &h.ExecutionError,
+		)
+		if err != nil {
+			return nil, err
+		}
+		histories = append(histories, h)
+	}
+	
+	return histories, nil
+}
+
+// GetStrategyDecisionsByStrategyID 获取特定策略的决策历史
+func (d *Database) GetStrategyDecisionsByStrategyID(strategyID string, limit int) ([]*StrategyDecisionHistory, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	
+	query := `
+		SELECT id, trader_id, strategy_id, decision_time, action, symbol,
+		       current_price, target_price, position_side, position_qty,
+		       amount_percent, reason, rsi_1h, rsi_4h, macd_4h,
+		       system_prompt, input_prompt, raw_ai_response,
+		       execution_success, execution_error
+		FROM strategy_decision_history
+		WHERE strategy_id = ?
+		ORDER BY decision_time DESC
+		LIMIT ?
+	`
+	
+	rows, err := d.db.Query(query, strategyID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var histories []*StrategyDecisionHistory
+	for rows.Next() {
+		h := &StrategyDecisionHistory{}
+		err := rows.Scan(
+			&h.ID, &h.TraderID, &h.StrategyID, &h.DecisionTime, &h.Action, &h.Symbol,
+			&h.CurrentPrice, &h.TargetPrice, &h.PositionSide, &h.PositionQty,
+			&h.AmountPercent, &h.Reason, &h.RSI1H, &h.RSI4H, &h.MACD4H,
+			&h.SystemPrompt, &h.InputPrompt, &h.RawAIResponse,
+			&h.ExecutionSuccess, &h.ExecutionError,
+		)
+		if err != nil {
+			return nil, err
+		}
+		histories = append(histories, h)
+	}
+	
+	return histories, nil
 }

@@ -52,10 +52,10 @@ export const translations = {
     noActivePositions: 'No active trading positions',
 
     // Recent Decisions
-    recentDecisions: 'Recent Decisions',
-    lastCycles: 'Last {count} trading cycles',
-    noDecisionsYet: 'No Decisions Yet',
-    aiDecisionsWillAppear: 'AI trading decisions will appear here',
+    recentDecisions: 'Strategy Execution Logs',
+    lastCycles: 'Last {count} execution checks',
+    noDecisionsYet: 'No Execution Logs Yet',
+    aiDecisionsWillAppear: 'AI strategy execution records will appear here',
     cycle: 'Cycle',
     success: 'Success',
     failed: 'Failed',
@@ -458,31 +458,31 @@ export const translations = {
     signUp: 'Sign Up',
 
     // Hero Section
-    githubStarsInDays: '2.5K+ GitHub Stars in 3 days',
+    githubStarsInDays: 'Professional AI Trading System',
     heroTitle1: 'Read the Market.',
-    heroTitle2: 'Write the Trade.',
+    heroTitle2: 'Execute with Precision.',
     heroDescription:
-      'NOFX is the future standard for AI trading — an open, community-driven agentic trading OS. Supporting Binance, Aster DEX and other exchanges, self-hosted, multi-agent competition, let AI automatically make decisions, execute and optimize trades for you.',
+      'NOFX is an advanced AI trading system designed for professional quant trading. Supporting Binance, Aster DEX and Hyperliquid. Let AI automatically make decisions, execute and optimize trades for you with institutional-grade risk management.',
     poweredBy:
-      'Powered by Aster DEX and Binance, strategically invested by Amber.ac.',
+      'Powered by advanced LLMs and institutional-grade execution engines.',
 
     // Landing Page CTA
-    readyToDefine: 'Ready to define the future of AI trading?',
+    readyToDefine: 'Ready to automate your trading?',
     startWithCrypto:
-      'Starting with crypto markets, expanding to TradFi. NOFX is the infrastructure of AgentFi.',
+      'Institutional grade infrastructure for individual traders.',
     getStartedNow: 'Get Started Now',
-    viewSourceCode: 'View Source Code',
+    viewSourceCode: 'Documentation',
 
     // Features Section
     coreFeatures: 'Core Features',
     whyChooseNofx: 'Why Choose NOFX?',
     openCommunityDriven:
-      'Open source, transparent, community-driven AI trading OS',
-    openSourceSelfHosted: '100% Open Source & Self-Hosted',
+      'Private, secure, and intelligent trading OS',
+    openSourceSelfHosted: '100% Private & Self-Hosted',
     openSourceDesc:
-      'Your framework, your rules. Non-black box, supports custom prompts and multi-models.',
-    openSourceFeatures1: 'Fully open source code',
-    openSourceFeatures2: 'Self-hosting deployment support',
+      'Your strategy, your rules. Non-black box, supports custom prompts and multi-models.',
+    openSourceFeatures1: 'Full data privacy',
+    openSourceFeatures2: 'Self-hosting deployment',
     openSourceFeatures3: 'Custom AI prompts',
     openSourceFeatures4: 'Multi-model support (DeepSeek, Qwen)',
     multiAgentCompetition: 'Multi-Agent Intelligent Competition',
@@ -522,24 +522,24 @@ export const translations = {
     startupMessages3: 'Web console http://localhost:3000',
 
     // How It Works Section
-    howToStart: 'How to Get Started with NOFX',
+    howToStart: 'How to Get Started',
     fourSimpleSteps:
       'Four simple steps to start your AI automated trading journey',
-    step1Title: 'Clone GitHub Repository',
+    step1Title: 'System Initialization',
     step1Desc:
-      'git clone https://github.com/tinkle-community/nofx and switch to dev branch to test new features.',
-    step2Title: 'Configure Environment',
+      'Initialize the NOFX secure trading environment and connect to your preferred exchange APIs.',
+    step2Title: 'Strategy Configuration',
     step2Desc:
-      'Frontend setup for exchange APIs (like Binance, Hyperliquid), AI models and custom prompts.',
-    step3Title: 'Deploy & Run',
+      'Configure your risk parameters, leverage settings, and select your preferred AI model.',
+    step3Title: 'Deploy Agents',
     step3Desc:
-      'One-click Docker deployment, start AI agents. Note: High-risk market, only test with money you can afford to lose.',
-    step4Title: 'Optimize & Contribute',
+      'Activate your AI agents. They will monitor the market 24/7 and execute trades based on your strategy.',
+    step4Title: 'Monitor & Optimize',
     step4Desc:
-      'Monitor trading, submit PRs to improve framework. Join Telegram to share strategies.',
+      'Track performance in real-time through the dashboard and optimize parameters for maximum returns.',
     importantRiskWarning: 'Important Risk Warning',
     riskWarningText:
-      'Dev branch is unstable, do not use funds you cannot afford to lose. NOFX is non-custodial, no official strategies. Trading involves risks, invest carefully.',
+      'Trading involves risks, please use funds you can afford to lose. NOFX is a tool, not a financial advisor.',
 
     // Community Section (testimonials are kept as-is since they are quotes)
 
@@ -608,15 +608,8 @@ export const translations = {
     faqMultipleTradersAnswer:
       'Yes! NOFX supports running multiple traders with different configurations, AI models, and trading strategies.',
 
-    // Contributing & Community
-    faqGithubProjectsTasks: 'How to use GitHub Projects and pick up tasks?',
-    faqGithubProjectsTasksAnswer:
-      'Roadmap: https://github.com/orgs/NoFxAiOS/projects/3  • Task Dashboard: https://github.com/orgs/NoFxAiOS/projects/5  • Steps: Open links → filter by labels (good first issue / help wanted / frontend / backend) → read Description & Acceptance Criteria → comment "assign me" or self-assign → Fork the repo → sync your fork\'s dev with upstream/dev → create a feature branch from your fork\'s dev → push to your fork → open PR (base: NoFxAiOS/nofx:dev ← compare: your-username/nofx:feat/your-topic) → reference Issue (Closes #123) and use the proper template.',
-
-    faqContributePR: 'How to properly submit PRs and contribute?',
-    faqContributePRAnswer:
-      "Guidelines: • Fork first; branch from your fork's dev (avoid direct commits to upstream main) • Branch naming: feat/..., fix/..., docs/...; Conventional Commits • Run checks before PR: npm --prefix web run lint && npm --prefix web run build • For UI changes, attach screenshots or a short video • Choose the proper PR template (frontend/backend/docs/general) • Open PR from your fork to NoFxAiOS/nofx:dev and link Issue (Closes #123) • Keep rebasing onto upstream/dev; ensure CI passes; prefer small, focused PRs • Read CONTRIBUTING.md and .github/PR_TITLE_GUIDE.md",
-
+    // Contributing & Community - REMOVED
+    
     // Setup & Configuration
     faqSystemRequirements: 'What are the system requirements?',
     faqSystemRequirementsAnswer:
@@ -826,10 +819,10 @@ export const translations = {
     noActivePositions: '当前没有活跃的交易持仓',
 
     // Recent Decisions
-    recentDecisions: '最近决策',
-    lastCycles: '最近 {count} 个交易周期',
-    noDecisionsYet: '暂无决策',
-    aiDecisionsWillAppear: 'AI交易决策将显示在这里',
+    recentDecisions: 'AI 策略执行日志',
+    lastCycles: '最近 {count} 次策略检查',
+    noDecisionsYet: '暂无执行日志',
+    aiDecisionsWillAppear: 'AI 策略执行检查记录将显示在这里',
     cycle: '周期',
     success: '成功',
     failed: '失败',
@@ -1199,27 +1192,27 @@ export const translations = {
     signUp: '注册',
 
     // Hero Section
-    githubStarsInDays: '3 天内 2.5K+ GitHub Stars',
-    heroTitle1: 'Read the Market.',
-    heroTitle2: 'Write the Trade.',
+    githubStarsInDays: '专业级 AI 量化交易系统',
+    heroTitle1: '读懂市场',
+    heroTitle2: '精准执行',
     heroDescription:
-      'NOFX 是 AI 交易的未来标准——一个开放、社区驱动的代理式交易操作系统。支持 Binance、Aster DEX 等交易所，自托管、多代理竞争，让 AI 为你自动决策、执行和优化交易。',
-    poweredBy: '由 Aster DEX 和 Binance 提供支持，Amber.ac 战略投资。',
+      'NOFX 是专为专业量化设计的 AI 交易系统。支持 Binance、Aster DEX 等交易所。让 AI 为您提供机构级的自动决策、风控与执行服务。',
+    poweredBy: '由先进大语言模型与机构级执行引擎驱动。',
 
     // Landing Page CTA
-    readyToDefine: '准备好定义 AI 交易的未来吗？',
+    readyToDefine: '准备好开启自动化交易了吗？',
     startWithCrypto:
-      '从加密市场起步，扩展到 TradFi。NOFX 是 AgentFi 的基础架构。',
+      '为个人投资者打造的机构级基础设施。',
     getStartedNow: '立即开始',
-    viewSourceCode: '查看源码',
+    viewSourceCode: '查看文档',
 
     // Features Section
     coreFeatures: '核心功能',
     whyChooseNofx: '为什么选择 NOFX？',
-    openCommunityDriven: '开源、透明、社区驱动的 AI 交易操作系统',
-    openSourceSelfHosted: '100% 开源与自托管',
-    openSourceDesc: '你的框架，你的规则。非黑箱，支持自定义提示词和多模型。',
-    openSourceFeatures1: '完全开源代码',
+    openCommunityDriven: '私有、安全、智能的交易操作系统',
+    openSourceSelfHosted: '100% 私有化部署',
+    openSourceDesc: '你的策略，你的规则。非黑箱，支持自定义提示词和多模型。',
+    openSourceFeatures1: '完全数据隐私',
     openSourceFeatures2: '支持自托管部署',
     openSourceFeatures3: '自定义 AI 提示词',
     openSourceFeatures4: '多模型支持（DeepSeek、Qwen）',
@@ -1239,37 +1232,35 @@ export const translations = {
     // About Section
     aboutNofx: '关于 NOFX',
     whatIsNofx: '什么是 NOFX？',
-    nofxNotAnotherBot: "NOFX 不是另一个交易机器人，而是 AI 交易的 'Linux' ——",
-    nofxDescription1: "一个透明、可信任的开源 OS，提供统一的 '决策-风险-执行'",
-    nofxDescription2: '层，支持所有资产类别。',
+    nofxNotAnotherBot: "NOFX 不是普通的交易机器人，而是专为量化设计的",
+    nofxDescription1: "智能交易操作系统，提供统一的 '决策-风险-执行'",
+    nofxDescription2: '层，支持全天候自动化交易。',
     nofxDescription3:
-      '从加密市场起步（24/7、高波动性完美测试场），未来扩展到股票、期货、外汇。核心：开放架构、AI',
+      '核心优势：机构级风控、多模型 AI 支持、',
     nofxDescription4:
-      '达尔文主义（多代理自竞争、策略进化）、CodeFi 飞轮（开发者 PR',
-    nofxDescription5: '贡献获积分奖励）。',
+      '实时策略调整与执行。',
+    nofxDescription5:
+      ' ',
     youFullControl: '你 100% 掌控',
     fullControlDesc: '完全掌控 AI 提示词和资金',
     startupMessages1: '启动自动交易系统...',
-    startupMessages2: 'API服务器启动在端口 8080',
-    startupMessages3: 'Web 控制台 http://localhost:3000',
+    startupMessages2: '连接交易所 API...',
+    startupMessages3: 'AI 模型加载完成',
 
     // How It Works Section
-    howToStart: '如何开始使用 NOFX',
-    fourSimpleSteps: '四个简单步骤，开启 AI 自动交易之旅',
-    step1Title: '拉取 GitHub 仓库',
-    step1Desc:
-      'git clone https://github.com/tinkle-community/nofx 并切换到 dev 分支测试新功能。',
-    step2Title: '配置环境',
-    step2Desc:
-      '前端设置交易所 API（如 Binance、Hyperliquid）、AI 模型和自定义提示词。',
-    step3Title: '部署与运行',
-    step3Desc:
-      '一键 Docker 部署，启动 AI 代理。注意：高风险市场，仅用闲钱测试。',
-    step4Title: '优化与贡献',
-    step4Desc: '监控交易，提交 PR 改进框架。加入 Telegram 分享策略。',
+    howToStart: '如何开始使用',
+    fourSimpleSteps: '四个步骤开启自动化盈利',
+    step1Title: '系统初始化',
+    step1Desc: '初始化 NOFX 安全交易环境，并连接您首选的交易所 API。',
+    step2Title: '策略配置',
+    step2Desc: '配置您的风控参数、杠杆设置，并选择偏好的 AI 模型。',
+    step3Title: '部署代理',
+    step3Desc: '激活 AI 代理。它们将 24/7 监控市场，并根据您的策略自动执行交易。',
+    step4Title: '监控与优化',
+    step4Desc: '通过仪表盘实时追踪表现，并持续优化参数以获取最大回报。',
     importantRiskWarning: '重要风险提示',
     riskWarningText:
-      'dev 分支不稳定，勿用无法承受损失的资金。NOFX 非托管，无官方策略。交易有风险，投资需谨慎。',
+      '交易有风险，请使用您可以承受损失的资金。NOFX 是交易工具，不构成投资建议。',
 
     // Community Section (testimonials are kept as-is since they are quotes)
 
@@ -1334,14 +1325,7 @@ export const translations = {
     faqMultipleTradersAnswer:
       '可以！NOFX 支持运行多个交易员，每个可配置不同的 AI 模型和交易策略。',
 
-    // Contributing & Community
-    faqGithubProjectsTasks: '如何在 GitHub Projects 中领取任务？',
-    faqGithubProjectsTasksAnswer:
-      '路线图：https://github.com/orgs/NoFxAiOS/projects/3 ｜ 任务看板：https://github.com/orgs/NoFxAiOS/projects/5 ｜ 步骤：打开链接 → 按标签筛选（good first issue / help wanted / frontend / backend）→ 阅读描述与验收标准 → 评论“assign me”或自助分配 → Fork 仓库 → 同步你 fork 的 dev 与 upstream/dev → 从你 fork 的 dev 创建特性分支 → 推送到你的 fork → 打开 PR（base：NoFxAiOS/nofx:dev ← compare：你的用户名/nofx:feat/your-topic）→ 关联 Issue（Closes #123）并选择正确模板。',
-
-    faqContributePR: '如何规范地提交 PR 并参与贡献？',
-    faqContributePRAnswer:
-      '规范：• 先 Fork；在你的 fork 的 dev 分支上创建特性分支（避免直接向上游 main 提交）• 分支命名：feat/...、fix/...、docs/...；提交信息遵循 Conventional Commits • PR 前运行检查：npm --prefix web run lint && npm --prefix web run build • 涉及 UI 变更请附截图/短视频 • 选择正确 PR 模板（frontend/backend/docs/general）• 从你的 fork 发起到 NoFxAiOS/nofx:dev，并在 PR 中关联 Issue（Closes #123）• 持续 rebase 到 upstream/dev，确保 CI 通过；尽量保持 PR 小而聚焦 • 参考 CONTRIBUTING.md 与 .github/PR_TITLE_GUIDE.md',
+    // Contributing & Community - REMOVED
 
     // Setup & Configuration
     faqSystemRequirements: '系统要求是什么？',
