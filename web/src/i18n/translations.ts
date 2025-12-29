@@ -3,7 +3,7 @@ export type Language = 'en' | 'zh'
 export const translations = {
   en: {
     // Header
-    appTitle: 'NOFX',
+    appTitle: 'AI Trading',
     subtitle: 'Multi-AI Model Trading Platform',
     aiTraders: 'AI Traders',
     details: 'Details',
@@ -23,7 +23,7 @@ export const translations = {
     faqNav: 'FAQ',
 
     // Footer
-    footerTitle: 'NOFX - AI Trading System',
+    footerTitle: 'AI Trading System',
     footerWarning: '⚠️ Trading involves risk. Use at your own discretion.',
 
     // Stats Cards
@@ -501,10 +501,10 @@ export const translations = {
     secureFeatures4: 'Trading log auditing',
 
     // About Section
-    aboutNofx: 'About NOFX',
-    whatIsNofx: 'What is NOFX?',
+    aboutNofx: 'About Platform',
+    whatIsNofx: 'What is AI Trading OS?',
     nofxNotAnotherBot:
-      "NOFX is not another trading bot, but the 'Linux' of AI trading —",
+      "This platform is not another trading bot, but the 'Linux' of AI trading —",
     nofxDescription1:
       'a transparent, trustworthy open source OS that provides a unified',
     nofxDescription2:
@@ -770,7 +770,7 @@ export const translations = {
   },
   zh: {
     // Header
-    appTitle: 'NOFX',
+    appTitle: 'AI Trading',
     subtitle: '多AI模型交易平台',
     aiTraders: 'AI交易员',
     details: '详情',
@@ -790,7 +790,7 @@ export const translations = {
     faqNav: '常见问题',
 
     // Footer
-    footerTitle: 'NOFX - AI交易系统',
+    footerTitle: 'AI交易系统',
     footerWarning: '⚠️ 交易有风险，请谨慎使用。',
 
     // Stats Cards
@@ -828,7 +828,7 @@ export const translations = {
     failed: '失败',
     systemPrompt: '系统提示词（完整）',
     inputPrompt: '输入提示',
-    aiThinking: '💭 AI思维链分析',
+    aiThinking: ' AI思维链分析',
     collapse: '▼ 收起',
     expand: '▶ 展开',
 
@@ -1230,9 +1230,9 @@ export const translations = {
     secureFeatures4: '交易日志审计',
 
     // About Section
-    aboutNofx: '关于 NOFX',
-    whatIsNofx: '什么是 NOFX？',
-    nofxNotAnotherBot: "NOFX 不是普通的交易机器人，而是专为量化设计的",
+    aboutNofx: '关于平台',
+    whatIsNofx: '什么是自动化交易系统？',
+    nofxNotAnotherBot: "这不仅是一个交易机器人，而是专为量化设计的",
     nofxDescription1: "智能交易操作系统，提供统一的 '决策-风险-执行'",
     nofxDescription2: '层，支持全天候自动化交易。',
     nofxDescription3:
@@ -1251,7 +1251,7 @@ export const translations = {
     howToStart: '如何开始使用',
     fourSimpleSteps: '四个步骤开启自动化盈利',
     step1Title: '系统初始化',
-    step1Desc: '初始化 NOFX 安全交易环境，并连接您首选的交易所 API。',
+    step1Desc: '初始化安全交易环境，并连接您首选的交易所 API。',
     step2Title: '策略配置',
     step2Desc: '配置您的风控参数、杠杆设置，并选择偏好的 AI 模型。',
     step3Title: '部署代理',
@@ -1260,7 +1260,7 @@ export const translations = {
     step4Desc: '通过仪表盘实时追踪表现，并持续优化参数以获取最大回报。',
     importantRiskWarning: '重要风险提示',
     riskWarningText:
-      '交易有风险，请使用您可以承受损失的资金。NOFX 是交易工具，不构成投资建议。',
+      '交易有风险，请使用您可以承受损失的资金。平台是交易工具，不构成投资建议。',
 
     // Community Section (testimonials are kept as-is since they are quotes)
 
@@ -1273,7 +1273,7 @@ export const translations = {
     strategicInvestment: '(战略投资)',
 
     // Login Modal
-    accessNofxPlatform: '访问 NOFX 平台',
+    accessNofxPlatform: '访问交易平台',
     loginRegisterPrompt: '请选择登录或注册以访问完整的 AI 交易平台',
     registerNewAccount: '注册新账号',
 

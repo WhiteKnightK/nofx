@@ -1378,153 +1378,126 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
       {canManageConfig && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6">
           {/* AI Models */}
-          <div className="binance-card p-3 md:p-4">
-          <h3
-            className="text-base md:text-lg font-semibold mb-3 flex items-center gap-2"
-            style={{ color: '#EAECEF' }}
-          >
-            <Brain
-              className="w-4 h-4 md:w-5 md:h-5"
-              style={{ color: '#60a5fa' }}
-            />
-            {t('aiModels', language)}
-          </h3>
-          <div className="space-y-2 md:space-y-3">
-            {configuredModels.map((model) => {
-              const inUse = isModelInUse(model.id)
-              return (
-                <div
-                  key={model.id}
-                  className={`flex items-center justify-between p-2 md:p-3 rounded transition-all ${
-                    inUse
-                      ? 'cursor-not-allowed'
-                      : 'cursor-pointer hover:bg-gray-700'
-                  }`}
-                  style={{ background: '#0B0E11', border: '1px solid #2B3139' }}
-                  onClick={() => handleModelClick(model.id)}
-                >
-                  <div className="flex items-center gap-2 md:gap-3">
-                    <div className="w-7 h-7 md:w-8 md:h-8 flex items-center justify-center flex-shrink-0">
-                      {getModelIcon(model.provider || model.id, {
-                        width: 28,
-                        height: 28,
-                      }) || (
-                        <div
-                          className="w-7 h-7 md:w-8 md:h-8 rounded-full flex items-center justify-center text-xs md:text-sm font-bold"
-                          style={{
-                            background:
-                              model.id === 'deepseek' ? '#60a5fa' : '#c084fc',
-                            color: '#fff',
-                          }}
-                        >
-                          {getShortName(model.name)[0]}
+          <div className="flex flex-col rounded-2xl overflow-hidden transition-all duration-300 hover:shadow-2xl"
+               style={{ 
+                 background: 'linear-gradient(145deg, #1E2329 0%, #161A1E 100%)', 
+                 border: '1px solid #2B3139',
+                 boxShadow: '0 8px 24px rgba(0,0,0,0.1)'
+               }}>
+            <div className="p-4 border-b border-[#2B3139] bg-white/5 flex items-center gap-2">
+              <Brain className="w-5 h-5 text-blue-400" />
+              <h3 className="text-base md:text-lg font-bold text-[#EAECEF]">
+                {t('aiModels', language)}
+              </h3>
+            </div>
+            <div className="p-4 space-y-3">
+              {configuredModels.map((model) => {
+                const inUse = isModelInUse(model.id)
+                return (
+                  <div
+                    key={model.id}
+                    className={`group flex items-center justify-between p-3 rounded-xl transition-all duration-200 border ${
+                      inUse
+                        ? 'cursor-not-allowed opacity-80'
+                        : 'cursor-pointer hover:bg-white/5 hover:scale-[1.02] active:scale-[0.98]'
+                    }`}
+                    style={{ 
+                      background: '#0B0E11', 
+                      borderColor: model.enabled ? 'rgba(16, 185, 129, 0.2)' : '#2B3139' 
+                    }}
+                    onClick={() => handleModelClick(model.id)}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-[#1E2329] flex items-center justify-center border border-[#2B3139] group-hover:border-blue-500/50 transition-colors">
+                        {getModelIcon(model.provider || model.id, {
+                          width: 28,
+                          height: 28,
+                        }) || (
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold bg-blue-500/20 text-blue-400">
+                            {getShortName(model.name)[0]}
+                          </div>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-bold text-[#EAECEF] truncate">
+                          {getShortName(model.name)}
                         </div>
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <div
-                        className="font-semibold text-sm md:text-base truncate"
-                        style={{ color: '#EAECEF' }}
-                      >
-                        {getShortName(model.name)}
-                      </div>
-                      <div className="text-xs" style={{ color: '#848E9C' }}>
-                        {inUse
-                          ? t('inUse', language)
-                          : model.enabled
-                            ? t('enabled', language)
-                            : t('configured', language)}
+                        <div className="text-[10px] uppercase tracking-wider font-semibold" 
+                             style={{ color: model.enabled ? '#0ECB81' : '#848E9C' }}>
+                          {inUse ? t('inUse', language) : model.enabled ? t('enabled', language) : t('configured', language)}
+                        </div>
                       </div>
                     </div>
+                    <div className={`w-2.5 h-2.5 rounded-full shadow-lg ${model.enabled ? 'bg-emerald-500 shadow-emerald-500/20' : 'bg-gray-600'}`} />
                   </div>
-                  <div
-                    className={`w-2.5 h-2.5 md:w-3 md:h-3 rounded-full flex-shrink-0 ${model.enabled ? 'bg-green-400' : 'bg-gray-500'}`}
-                  />
+                )
+              })}
+              {configuredModels.length === 0 && (
+                <div className="text-center py-8 text-[#848E9C]">
+                  <Brain className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                  <div className="text-sm">{t('noModelsConfigured', language)}</div>
                 </div>
-              )
-            })}
-            {configuredModels.length === 0 && (
-              <div
-                className="text-center py-6 md:py-8"
-                style={{ color: '#848E9C' }}
-              >
-                <Brain className="w-10 h-10 md:w-12 md:h-12 mx-auto mb-2 opacity-50" />
-                <div className="text-xs md:text-sm">
-                  {t('noModelsConfigured', language)}
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
 
-        {/* Exchanges */}
-        <div className="binance-card p-3 md:p-4">
-          <h3
-            className="text-base md:text-lg font-semibold mb-3 flex items-center gap-2"
-            style={{ color: '#EAECEF' }}
-          >
-            <Landmark
-              className="w-4 h-4 md:w-5 md:h-5"
-              style={{ color: '#F0B90B' }}
-            />
-            {t('exchanges', language)}
-          </h3>
-          <div className="space-y-2 md:space-y-3">
-            {configuredExchanges.map((exchange) => {
-              const inUse = isExchangeInUse(exchange.id)
-              return (
-                <div
-                  key={exchange.id}
-                  className={`flex items-center justify-between p-2 md:p-3 rounded transition-all ${
-                    inUse
-                      ? 'cursor-not-allowed'
-                      : 'cursor-pointer hover:bg-gray-700'
-                  }`}
-                  style={{ background: '#0B0E11', border: '1px solid #2B3139' }}
-                  onClick={() => handleExchangeClick(exchange.id)}
-                >
-                  <div className="flex items-center gap-2 md:gap-3">
-                    <div className="w-7 h-7 md:w-8 md:h-8 flex items-center justify-center flex-shrink-0">
-                      {getExchangeIcon(exchange.id, { width: 28, height: 28 })}
-                    </div>
-                    <div className="min-w-0">
-                      <div
-                        className="font-semibold text-sm md:text-base truncate"
-                        style={{ color: '#EAECEF' }}
-                      >
-                        {(exchange as any).label || getShortName(exchange.name)}
-                      </div>
-                      <div className="text-xs" style={{ color: '#848E9C' }}>
-                        {exchange.type.toUpperCase()} •{' '}
-                        {getShortName(exchange.name)} •{' '}
-                        {inUse
-                          ? t('inUse', language)
-                          : exchange.enabled
-                            ? t('enabled', language)
-                            : t('configured', language)}
-                      </div>
-                    </div>
-                  </div>
+          {/* Exchanges */}
+          <div className="flex flex-col rounded-2xl overflow-hidden transition-all duration-300 hover:shadow-2xl"
+               style={{ 
+                 background: 'linear-gradient(145deg, #1E2329 0%, #161A1E 100%)', 
+                 border: '1px solid #2B3139',
+                 boxShadow: '0 8px 24px rgba(0,0,0,0.1)'
+               }}>
+            <div className="p-4 border-b border-[#2B3139] bg-white/5 flex items-center gap-2">
+              <Landmark className="w-5 h-5 text-orange-400" />
+              <h3 className="text-base md:text-lg font-bold text-[#EAECEF]">
+                {t('exchanges', language)}
+              </h3>
+            </div>
+            <div className="p-4 space-y-3">
+              {configuredExchanges.map((exchange) => {
+                const inUse = isExchangeInUse(exchange.id)
+                return (
                   <div
-                    className={`w-2.5 h-2.5 md:w-3 md:h-3 rounded-full flex-shrink-0 ${exchange.enabled ? 'bg-green-400' : 'bg-gray-500'}`}
-                  />
+                    key={exchange.id}
+                    className={`group flex items-center justify-between p-3 rounded-xl transition-all duration-200 border ${
+                      inUse
+                        ? 'cursor-not-allowed opacity-80'
+                        : 'cursor-pointer hover:bg-white/5 hover:scale-[1.02] active:scale-[0.98]'
+                    }`}
+                    style={{ 
+                      background: '#0B0E11', 
+                      borderColor: exchange.enabled ? 'rgba(240, 185, 11, 0.2)' : '#2B3139' 
+                    }}
+                    onClick={() => handleExchangeClick(exchange.id)}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-[#1E2329] flex items-center justify-center border border-[#2B3139] group-hover:border-orange-500/50 transition-colors">
+                        {getExchangeIcon(exchange.id, { width: 28, height: 28 })}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-bold text-[#EAECEF] truncate">
+                          {(exchange as any).label || getShortName(exchange.name)}
+                        </div>
+                        <div className="text-[10px] uppercase tracking-wider font-semibold" 
+                             style={{ color: exchange.enabled ? '#F0B90B' : '#848E9C' }}>
+                          {exchange.type.toUpperCase()} • {inUse ? t('inUse', language) : exchange.enabled ? t('enabled', language) : t('configured', language)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className={`w-2.5 h-2.5 rounded-full shadow-lg ${exchange.enabled ? 'bg-[#F0B90B] shadow-orange-500/20' : 'bg-gray-600'}`} />
+                  </div>
+                )
+              })}
+              {configuredExchanges.length === 0 && (
+                <div className="text-center py-8 text-[#848E9C]">
+                  <Landmark className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                  <div className="text-sm">{t('noExchangesConfigured', language)}</div>
                 </div>
-              )
-            })}
-            {configuredExchanges.length === 0 && (
-              <div
-                className="text-center py-6 md:py-8"
-                style={{ color: '#848E9C' }}
-              >
-                <Landmark className="w-10 h-10 md:w-12 md:h-12 mx-auto mb-2 opacity-50" />
-                <div className="text-xs md:text-sm">
-                  {t('noExchangesConfigured', language)}
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
-      </div>
       )}
 
       {/* Traders List */}
@@ -1759,7 +1732,7 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                   </div>
                 </div>
               </div>
-                    ))}
+            ))}
                   </div>
                 </div>
                 )

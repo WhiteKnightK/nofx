@@ -163,7 +163,7 @@ export function DecisionCard({
             style={{ color: '#F0B90B' }}
           >
             <span className="font-semibold">
-              📤 💭 {t('aiThinking', language)}
+              💭 {t('aiThinking', language)}
             </span>
             <span className="text-xs">
               {showCoT ? t('collapse', language) : t('expand', language)}

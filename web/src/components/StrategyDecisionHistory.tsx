@@ -12,7 +12,7 @@ export function StrategyDecisionHistory({ traderId }: StrategyDecisionHistoryPro
     const [limit] = useState(50);
     const { data, error } = useSWR(
         traderId ? `strategy-decisions-${traderId}-${limit}` : null,
-        () => api.getStrategyDecisions(traderId, limit),
+        () => api.getStrategyDecisions(traderId, 'latest', limit),
         { refreshInterval: 5000 }
     );
 

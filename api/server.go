@@ -146,7 +146,7 @@ func (s *Server) setupRoutes() {
 			protected.GET("/traders/:id/account", s.handleGetTraderAccount)
 			protected.GET("/traders/:id/strategy-status", s.handleGetTraderStrategyStatus)
 			protected.GET("/traders/:id/strategy-statuses", s.handleGetTraderStrategyStatuses) // 新增：获取所有策略状态
-			protected.GET("/traders/:id/strategy-decisions", s.handleGetStrategyDecisions)
+		protected.GET("/traders/:id/strategy-decisions", s.handleGetStrategyDecisions)
 			protected.DELETE("/traders/:id/account", s.handleDeleteTraderAccount)
 			protected.POST("/traders/:id/category", s.handleSetTraderCategory)
 
@@ -180,25 +180,27 @@ func (s *Server) setupRoutes() {
 			protected.GET("/user/signal-sources", s.handleGetUserSignalSource)
 			protected.POST("/user/signal-sources", s.handleSaveUserSignalSource)
 
-			// 用户账户信息
-			protected.GET("/user/account", s.handleUserAccount)
+		// 用户账户信息
+		protected.GET("/user/account", s.handleUserAccount)
 
-			// 指定trader的数据（使用query参数 ?trader_id=xxx）
-			protected.GET("/status", s.handleStatus)
-			protected.GET("/account", s.handleAccount)
-			protected.GET("/positions", s.handlePositions)
-			protected.POST("/positions/close", s.handleClosePosition) // 平仓操作
-			protected.GET("/decisions", s.handleDecisions)
-			protected.GET("/decisions/latest", s.handleLatestDecisions)
-			protected.GET("/strategy/active", s.handleGetActiveStrategy) // 获取当前全局策略
-			protected.GET("/strategy/active-list", s.handleGetActiveStrategies) // 新增：获取所有活跃全局策略
-			// 实时提示词预览（每次请求现算，不读缓存）
-			// protected.GET("/traders/:id/prompt-preview", s.handlePromptPreview)
-			protected.GET("/statistics", s.handleStatistics)
-			protected.GET("/equity-history", s.handleEquityHistory) // 需要认证，使用当前登录用户做权限校验
-			protected.GET("/performance", s.handlePerformance)
-		}
+		// 指定trader的数据（使用query参数 ?trader_id=xxx）
+		protected.GET("/status", s.handleStatus)
+		protected.GET("/account", s.handleAccount)
+		protected.GET("/positions", s.handlePositions)
+		protected.POST("/positions/close", s.handleClosePosition) // 平仓操作
+		protected.GET("/orders", s.handleGetOrders)              // 委托列表（止盈止损）
+		protected.GET("/decisions", s.handleDecisions)
+		protected.GET("/decisions/latest", s.handleLatestDecisions)
+		protected.GET("/strategy/active", s.handleGetActiveStrategy)     // 获取当前全局策略
+		protected.GET("/strategy/active-list", s.handleGetActiveStrategies) // 新增：获取所有活跃全局策略
+		protected.GET("/strategy/signals", s.handleGetParsedSignals)        // 新增：获取全量解析信号历史
+		// 实时提示词预览（每次请求现算，不读缓存）
+		// protected.GET("/traders/:id/prompt-preview", s.handlePromptPreview)
+		protected.GET("/statistics", s.handleStatistics)
+		protected.GET("/equity-history", s.handleEquityHistory) // 需要认证，使用当前登录用户做权限校验
+		protected.GET("/performance", s.handlePerformance)
 	}
+}
 }
 
 // handleHealth 健康检查
@@ -610,7 +612,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取交易所配置失败: %v", err)})
 		return
 	}
-
+	
 	var exchangeProvider string
 	var exchangeCfg *config.ExchangeConfig
 	for _, exchange := range exchanges {
@@ -634,12 +636,12 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 			break
 		}
 	}
-
+	
 	if exchangeCfg == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("交易所配置不存在: %s", req.ExchangeID)})
 		return
 	}
-
+	
 	if !exchangeCfg.Enabled {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "交易所未启用"})
 		return
@@ -903,8 +905,8 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 				s.traderManager.RemoveTrader(traderID)
 
 				// 3. 重新加载配置到内存
-				err = s.traderManager.LoadUserTraders(s.database, userID)
-				if err != nil {
+	err = s.traderManager.LoadUserTraders(s.database, userID)
+	if err != nil {
 					log.Printf("❌ 重启 Trader 失败: %v", err)
 				} else {
 					// 4. 按照当前 is_running 状态重新启动该 Trader
@@ -1004,7 +1006,7 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 func (s *Server) handleStartTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
-
+	
 	// 🔍 调试：记录完整的请求信息
 	log.Printf("🔍 [handleStartTrader] 请求详情:")
 	log.Printf("  - URL路径: %s", c.Request.URL.Path)
@@ -1037,7 +1039,7 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
 		return
 	}
-
+	
 	log.Printf("✅ [handleStartTrader] 找到交易员: ID=%s, ExchangeID=%s, AIModelID=%s", traderRecord.ID, traderRecord.ExchangeID, traderRecord.AIModelID)
 
 	// 权限检查：如果不是admin，验证交易员是否属于当前用户
@@ -2004,6 +2006,56 @@ func (s *Server) handlePositions(c *gin.Context) {
 	c.JSON(http.StatusOK, positions)
 }
 
+// handleGetOrders 委托列表（普通委托 + 止盈止损计划委托）
+func (s *Server) handleGetOrders(c *gin.Context) {
+	_, traderID, err := s.getTraderFromQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	autoTrader, err := s.traderManager.GetTrader(traderID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	trader := autoTrader.GetTrader() // 获取内部的交易器实例
+
+	// 获取交易对（如果有指定）
+	symbol := c.Query("symbol") // 可选：只查询某一个交易对的委托
+
+	// 如果未指定 symbol，直接查询账号下所有未成交委托（Bitget 支持 symbol 为空）
+	if symbol == "" {
+		orders, err := trader.GetOpenOrders("")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取委托单失败: %v", err)})
+			return
+		}
+
+		// Bitget 返回的订单里本身会包含 symbol，这里只做透传
+		c.JSON(http.StatusOK, gin.H{"orders": orders})
+		return
+	}
+
+	// 指定了symbol，仅查询该交易对
+	orders, err := trader.GetOpenOrders(symbol)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取委托单失败: %v", err)})
+		return
+	}
+
+	// 补充 symbol 字段（以防个别交易所未返回）
+	for _, order := range orders {
+		if _, ok := order["symbol"]; !ok {
+			order["symbol"] = symbol
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"orders": orders})
+}
+
+
 // handleClosePosition 平仓操作
 func (s *Server) handleClosePosition(c *gin.Context) {
 	_, traderID, err := s.getTraderFromQuery(c)
@@ -2045,6 +2097,17 @@ func (s *Server) handleClosePosition(c *gin.Context) {
 			"error": fmt.Sprintf("平仓失败: %v", err),
 		})
 		return
+	}
+
+	// 手动平仓成功后：将当前交易员该交易对对应的最新策略标记为 CLOSED（仅影响本交易员）
+	if req.Symbol != "" {
+		strategyID, err := s.database.GetLatestStrategyIDBySymbol(traderID, req.Symbol)
+		if err == nil && strategyID != "" {
+			if err := s.database.CloseStrategyForTrader(traderID, strategyID); err != nil {
+				log.Printf("⚠️ 手动平仓后更新策略状态失败: trader=%s symbol=%s strategy_id=%s err=%v",
+					traderID, req.Symbol, strategyID, err)
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -4371,23 +4434,55 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 
 		// 允许：创建者、本体 user_id、绑定的 trader_account 用户
 		if userID != ownerID && userID != trader.UserID && userID != trader.TraderAccountID {
-			c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该交易员"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该交易员"})
+		return
+		}
+	}
+
+	// 支持三种模式：latest（最新N条）、open（所有开仓）、close（所有平仓）
+	mode := c.Query("mode") // latest | open | close
+	if mode == "" {
+		mode = "latest" // 默认为最新模式
+	}
+
+	var decisions []*config.StrategyDecisionHistory
+
+	switch mode {
+	case "open":
+		// 所有开仓/加仓决策（SQL级别过滤，不限制数量）
+		var openErr error
+		decisions, openErr = s.database.GetAllOpenStrategyDecisions(id)
+		if openErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取开仓决策失败: %v", openErr)})
 			return
 		}
-	}
-
-	// 获取决策历史(默认最近50条)
-	limit := 50
-	if limitStr := c.Query("limit"); limitStr != "" {
-		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
-			limit = parsedLimit
+		log.Printf("✓ [决策查询] trader=%s mode=open 返回 %d 条", id, len(decisions))
+		
+	case "close":
+		// 所有平仓决策（SQL级别过滤，不限制数量）
+		var closeErr error
+		decisions, closeErr = s.database.GetAllCloseStrategyDecisions(id)
+		if closeErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取平仓决策失败: %v", closeErr)})
+			return
 		}
-	}
-
-	decisions, err := s.database.GetStrategyDecisionHistory(id, limit)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取决策历史失败: %v", err)})
-		return
+		log.Printf("✓ [决策查询] trader=%s mode=close 返回 %d 条", id, len(decisions))
+		
+	default: // "latest"
+		// 最新N条（默认50条）
+		limit := 50
+		if limitStr := c.Query("limit"); limitStr != "" {
+			if parsedLimit, parseErr := strconv.Atoi(limitStr); parseErr == nil && parsedLimit > 0 {
+				limit = parsedLimit
+			}
+		}
+		var latestErr error
+		decisions, latestErr = s.database.GetStrategyDecisionHistory(id, limit)
+		if latestErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取决策历史失败: %v", latestErr)})
+			return
+		}
+		log.Printf("✓ [决策查询] trader=%s mode=latest limit=%d 返回 %d 条", id, limit, len(decisions))
 	}
 
 	// 如果没有记录，返回空数组
@@ -4398,5 +4493,6 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"decisions": decisions,
 		"total":     len(decisions),
+		"mode":      mode,
 	})
 }

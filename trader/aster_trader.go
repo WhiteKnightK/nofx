@@ -1230,3 +1230,10 @@ func (t *AsterTrader) FormatQuantity(symbol string, quantity float64) (string, e
 	}
 	return fmt.Sprintf("%v", formatted), nil
 }
+
+// GetOpenOrders 获取当前未成交的委托单（Aster暂不实现，仅为接口兼容）
+func (t *AsterTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	log.Printf("⚠️  Aster GetOpenOrders 暂不实现")
+	return []map[string]interface{}{}, nil
+}
+

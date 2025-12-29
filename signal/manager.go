@@ -1,6 +1,7 @@
 package signal
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -27,7 +28,9 @@ type StrategyManager struct {
 // StrategySnapshot 策略快照（用于多策略轮询）
 type StrategySnapshot struct {
 	Strategy *SignalDecision
-	Time     time.Time
+	// PrevStrategy 记录同一交易对上一次生效的策略（用于提示AI了解策略变更前后差异）
+	PrevStrategy *SignalDecision
+	Time         time.Time
 }
 
 // GlobalManager 全局单例
@@ -37,10 +40,14 @@ var GlobalManager *StrategyManager
 func InitGlobalManager(mcpClient *mcp.Client) error {
 	// 读取环境变量配置
 	gmailUser := os.Getenv("GMAIL_USER")
-	if gmailUser == "" { gmailUser = os.Getenv("EMAIL_USER") }
-	
+	if gmailUser == "" {
+		gmailUser = os.Getenv("EMAIL_USER")
+	}
+
 	gmailPass := os.Getenv("GMAIL_PASSWORD")
-	if gmailPass == "" { gmailPass = os.Getenv("EMAIL_PASSWORD") }
+	if gmailPass == "" {
+		gmailPass = os.Getenv("EMAIL_PASSWORD")
+	}
 
 	if gmailUser == "" || gmailPass == "" {
 		log.Println("⚠️ 未配置 GMAIL_USER/PASSWORD，信号模式将不可用")
@@ -68,7 +75,7 @@ func InitGlobalManager(mcpClient *mcp.Client) error {
 		parser:       parser,
 		stopChan:     make(chan struct{}),
 	}
-	
+
 	return nil
 }
 
@@ -96,51 +103,101 @@ func (sm *StrategyManager) Stop() {
 func (sm *StrategyManager) loop() {
 	for {
 		select {
-		case content := <-sm.gmailMonitor.SignalChan:
-			// 解析邮件
-			decision, err := sm.parser.Parse(content)
-			if err != nil {
-				log.Printf("❌ 策略解析失败: %v", err)
-				continue
-			}
-			
-			// 更新策略
-			sm.UpdateStrategy(decision)
-			
+		case email := <-sm.gmailMonitor.SignalChan:
+			// 【优化】使用 Goroutine 并行解析多封邮件，避免串行排队导致处理慢
+			go func(e *gmail.Email) {
+				// 解析邮件
+				if e == nil || e.Body == "" {
+					return
+				}
+
+				decision, err := sm.parser.Parse(e.Body)
+				if err != nil {
+					log.Printf("❌ 策略解析失败: %v", err)
+					return
+				}
+
+				// 更新策略（使用邮件原始时间作为策略时间轴的基准）
+				sm.UpdateStrategy(decision, e.Date)
+			}(email)
+
 		case <-sm.stopChan:
 			return
 		}
 	}
 }
 
-func (sm *StrategyManager) UpdateStrategy(newStrat *SignalDecision) {
+func (sm *StrategyManager) UpdateStrategy(newStrat *SignalDecision, receivedAt time.Time) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	// 如果未提供邮件时间，使用当前时间兜底
+	if receivedAt.IsZero() {
+		receivedAt = time.Now()
+	}
 
 	if sm.strategies == nil {
 		sm.strategies = make(map[string]*StrategySnapshot)
 	}
 
 	if newStrat.SignalID == "" {
+		// 【注意】这里必须保证每一封“新策略邮件”拿到一个全新的 ID
+		// 原来为了“稳定 ID”改成基于 symbol+direction+entry 的固定值，
+		// 会导致：老策略在数据库里已经是 CLOSED，新邮件如果价格相同就复用同一个 ID，
+		// 结果被整个执行链路当成“已经结束的旧策略”，AI 完全不会再跟新策略跑。
+		//
+		// 所以这里恢复为“带时间戳的唯一 ID”，确保每一轮新策略都是一个独立生命周期。
 		newStrat.SignalID = fmt.Sprintf("anon_%s_%s_%.4f_%d",
 			newStrat.Symbol, newStrat.Direction, newStrat.Entry.PriceTarget, time.Now().UnixNano())
 	}
-	key := newStrat.SignalID
 
-	// 【规则】同一交易对只保留最新策略：如果已有相同 symbol 的其他策略，先移除旧的
-	for k, snap := range sm.strategies {
-		if snap != nil && snap.Strategy != nil &&
-			snap.Strategy.Symbol == newStrat.Symbol && k != key {
-			delete(sm.strategies, k)
+	// 关键：内存中的 active 策略池按「交易对」维度去重
+	// - map 的 key 使用 symbol，保证同一交易对始终只有一条最新策略
+	// - PrevStrategy 用于记录上一次策略版本，便于 AI 对比前后差异
+	key := newStrat.Symbol
+
+	var prev *SignalDecision
+	if existing, ok := sm.strategies[key]; ok && existing != nil && existing.Strategy != nil {
+		// 如果新邮件时间比当前记录还旧，则忽略（防止 IMAP 回溯时老邮件覆盖新邮件）
+		if receivedAt.Before(existing.Time) {
+			log.Printf("⏭ [全局] 收到较旧策略，忽略: %s %s @ %.2f (new %s < existing %s)",
+				newStrat.Direction, newStrat.Symbol, newStrat.Entry.PriceTarget,
+				receivedAt.Format(time.RFC3339), existing.Time.Format(time.RFC3339))
+			return
+		}
+
+		// 如果时间相同且 SignalID 相同，视为重复处理，直接忽略
+		if receivedAt.Equal(existing.Time) && existing.Strategy.SignalID == newStrat.SignalID {
+			return
+		}
+
+		prev = existing.Strategy
+	}
+
+	// 同一交易对无论有多少封新邮件，这里都会覆盖为“最新一封”
+	sm.strategies[key] = &StrategySnapshot{
+		Strategy:     newStrat,
+		PrevStrategy: prev,
+		Time:         receivedAt,
+	}
+
+	// 【新增】持久化到数据库
+	if config.GlobalDB != nil {
+		contentJSON, _ := json.Marshal(newStrat)
+		err := config.GlobalDB.SaveParsedSignal(&config.ParsedSignal{
+			SignalID:    newStrat.SignalID,
+			Symbol:      newStrat.Symbol,
+			Direction:   newStrat.Direction,
+			ReceivedAt:  receivedAt,
+			ContentJSON: string(contentJSON),
+			RawContent:  newStrat.RawContent,
+		})
+		if err != nil {
+			log.Printf("⚠️ 持久化策略信号失败: %v", err)
 		}
 	}
 
-	// 相同signal_id视为同一策略的更新，直接覆盖快照
-	sm.strategies[key] = &StrategySnapshot{
-		Strategy: newStrat,
-		Time:     time.Now(),
-	}
-	log.Printf("📢 [全局] 策略已更新: %s %s @ %.2f (ID: %s)", 
+	log.Printf("📢 [全局] 策略已更新: %s %s @ %.2f (ID: %s)",
 		newStrat.Direction, newStrat.Symbol, newStrat.Entry.PriceTarget, newStrat.SignalID)
 }
 
@@ -165,36 +222,37 @@ func (sm *StrategyManager) ListActiveStrategies() []*StrategySnapshot {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
+	result := make([]*StrategySnapshot, 0)
 	if len(sm.strategies) == 0 {
-		return nil
+		return result
 	}
-
-	result := make([]*StrategySnapshot, 0, len(sm.strategies))
 	for _, s := range sm.strategies {
 		if s != nil && s.Strategy != nil {
 			result = append(result, s)
 		}
 	}
 
-	// 为了轮询顺序稳定，按「收到时间」排序（时间早的在前，时间相同按交易对字母序）
+	// 为了轮询顺序与邮件时间一致，这里按「邮件接收时间」排序（旧 -> 新）
+	// 说明：
+	// - Time 字段现在使用邮件原始接收时间（Envelope.Date），不会因为重复轮询而抖动
+	// - 同一时间的多条策略，再按 Symbol 做字母序兜底，保证顺序稳定可预期
 	sort.Slice(result, func(i, j int) bool {
-		ti := result[i].Time
-		tj := result[j].Time
-		if ti.Equal(tj) {
-			symI := ""
-			symJ := ""
-			if result[i].Strategy != nil {
-				symI = result[i].Strategy.Symbol
-			}
-			if result[j].Strategy != nil {
-				symJ = result[j].Strategy.Symbol
-			}
-			return symI < symJ
+		// 先按时间从旧到新
+		if !result[i].Time.Equal(result[j].Time) {
+			return result[i].Time.Before(result[j].Time)
 		}
-		return ti.Before(tj)
+
+		// 时间相同再按 symbol 字母序兜底
+		symI := ""
+		symJ := ""
+		if result[i].Strategy != nil {
+			symI = result[i].Strategy.Symbol
+		}
+		if result[j].Strategy != nil {
+			symJ = result[j].Strategy.Symbol
+		}
+		return symI < symJ
 	})
 
 	return result
 }
-
-

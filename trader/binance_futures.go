@@ -902,6 +902,13 @@ func (t *FuturesTrader) FormatQuantity(symbol string, quantity float64) (string,
 	return fmt.Sprintf(format, quantity), nil
 }
 
+// GetOpenOrders 获取当前未成交的委托单（Binance暂不实现，仅为接口兼容）
+func (t *FuturesTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	log.Printf("⚠️  Binance GetOpenOrders 暂不实现")
+	return []map[string]interface{}{}, nil
+}
+
+
 // 辅助函数
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && stringContains(s, substr)

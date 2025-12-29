@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { api } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
-import { BookOpen, Plus, Trash2, Users, Play, Square, UserPlus, Eye, User, Copy, Check } from 'lucide-react'
+import { BookOpen, Plus, Trash2, Users, Bot, UserPlus, Eye, User, Copy, Check } from 'lucide-react'
 import { ToastContainer, ModernModal } from './Toast'
 
 interface Category {
@@ -411,7 +411,7 @@ export function CategoriesPage() {
       </div>
 
       {/* Categories List */}
-      <div className="space-y-3 md:space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
         {viewableCategories.length > 0 ? (
           viewableCategories.map((category) => {
             const stats = getCategoryStats(category.name)
@@ -421,72 +421,103 @@ export function CategoriesPage() {
             return (
               <div
                 key={category.id}
-                className="p-4 md:p-6 rounded-lg transition-all hover:translate-y-[-2px]"
-                style={{ background: '#0B0E11', border: '1px solid #2B3139' }}
+                className="flex flex-col rounded-2xl overflow-hidden transition-all duration-300 hover:translate-y-[-4px] hover:shadow-2xl group"
+                style={{ 
+                  background: 'linear-gradient(145deg, #1E2329 0%, #161A1E 100%)', 
+                  border: '1px solid #2B3139',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.2)'
+                }}
               >
-                <div className="flex flex-col gap-4">
-                  {/* 分类基本信息 */}
-                  <div>
-                    <div className="flex items-center gap-3 mb-2">
-                      <h3 className="text-lg md:text-xl font-bold" style={{ color: '#EAECEF' }}>
-                        {category.name}
-                      </h3>
-                      {isGroupLeader && (
-                        <span
-                          className="px-2 py-1 rounded text-xs"
-                          style={{ background: 'rgba(99, 102, 241, 0.1)', color: '#6366F1' }}
-                        >
-                          只读
-                        </span>
-                      )}
+                {/* 顶部标题栏 */}
+                <div className="p-5 border-b border-[#2B3139] bg-white/5 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center text-emerald-500">
+                      <BookOpen className="w-4 h-4" />
                     </div>
-                    {category.description && (
-                      <p className="text-sm mb-3" style={{ color: '#848E9C' }}>
-                        {category.description}
-                      </p>
-                    )}
-                    <div className="flex items-center gap-4 text-sm">
-                      <div className="flex items-center gap-2" style={{ color: '#848E9C' }}>
-                        <Users className="w-4 h-4" />
-                        <span>交易员: {stats.total}</span>
-                      </div>
-                      <div className="flex items-center gap-2" style={{ color: '#0ECB81' }}>
-                        <Play className="w-4 h-4" />
-                        <span>运行中: {stats.running}</span>
-                      </div>
-                      <div className="flex items-center gap-2" style={{ color: '#848E9C' }}>
-                        <Square className="w-4 h-4" />
-                        <span>已停止: {stats.total - stats.running}</span>
-                      </div>
-                    </div>
+                    <h3 className="text-lg font-bold text-[#EAECEF] truncate max-w-[150px]">
+                      {category.name}
+                    </h3>
+                  </div>
+                  {isGroupLeader && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                      只读模式
+                    </span>
+                  )}
+                </div>
 
-                    {/* 交易员列表（小组组长可以查看） */}
-                    {isGroupLeader && categoryTraders.length > 0 && (
-                      <div className="mt-4 pt-4" style={{ borderTop: '1px solid #2B3139' }}>
-                        <div className="text-sm mb-2" style={{ color: '#848E9C' }}>
-                          交易员列表：
+                <div className="p-5 flex-1 space-y-5">
+                  {/* 统计信息 */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="bg-[#0B0E11] p-3 rounded-xl border border-[#2B3139]/50 text-center">
+                      <div className="text-[10px] text-[#848E9C] mb-1">总交易员</div>
+                      <div className="text-lg font-bold text-[#EAECEF]">{stats.total}</div>
+                    </div>
+                    <div className="bg-[#0B0E11] p-3 rounded-xl border border-[#2B3139]/50 text-center">
+                      <div className="text-[10px] text-emerald-500/70 mb-1">运行中</div>
+                      <div className="text-lg font-bold text-emerald-500">{stats.running}</div>
+                    </div>
+                    <div className="bg-[#0B0E11] p-3 rounded-xl border border-[#2B3139]/50 text-center">
+                      <div className="text-[10px] text-orange-500/70 mb-1">已停止</div>
+                      <div className="text-lg font-bold text-orange-500">{stats.total - stats.running}</div>
+                    </div>
+                  </div>
+
+                  {/* 描述 */}
+                  {category.description && (
+                    <p className="text-xs text-[#848E9C] line-clamp-2 italic px-1">
+                      "{category.description}"
+                    </p>
+                  )}
+
+                  {/* 核心成员信息 */}
+                  <div className="space-y-3">
+                    {/* 小组组长卡片 */}
+                    {categoryGroupLeader && (
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-indigo-500/5 border border-indigo-500/20">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <div className="w-7 h-7 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-400 shrink-0">
+                            <Users className="w-3.5 h-3.4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-[#EAECEF] truncate">{categoryGroupLeader.email}</div>
+                            <div className="text-[10px] text-[#848E9C]">小组组长</div>
+                          </div>
                         </div>
-                        <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => {
+                            const groupLeaderAccount = categoryAccounts.find(
+                              acc => acc.category === category.name && acc.role === 'group_leader' && acc.email === categoryGroupLeader.email
+                            )
+                            if (groupLeaderAccount) handleViewAccountInfo(groupLeaderAccount.id)
+                            else if (categoryGroupLeader.id) handleViewAccountInfo(categoryGroupLeader.id)
+                          }}
+                          className="p-1.5 rounded-lg hover:bg-indigo-500/20 text-indigo-400 transition-colors"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* 交易员详情入口 */}
+                    {isGroupLeader && categoryTraders.length > 0 && (
+                      <div className="pt-2">
+                        <div className="text-[10px] font-bold text-[#5E6673] uppercase tracking-wider mb-2 px-1 flex items-center gap-2">
+                          <Bot className="w-3 h-3" /> 交易员状态 ({categoryTraders.length})
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 max-h-[100px] overflow-y-auto pr-1 custom-scrollbar">
                           {categoryTraders.map((trader) => {
                             const isRunning = trader.is_running === true
                             return (
                               <div
                                 key={trader.trader_id}
-                                className="px-3 py-1.5 rounded text-xs flex items-center gap-2"
-                                style={{
-                                  background: isRunning
-                                    ? 'rgba(14, 203, 129, 0.1)'
-                                    : 'rgba(132, 142, 156, 0.1)',
-                                  border: `1px solid ${isRunning ? '#0ECB81' : '#848E9C'}`,
-                                  color: isRunning ? '#0ECB81' : '#848E9C',
-                                }}
+                                className={`px-2 py-1 rounded-lg text-[10px] font-medium flex items-center gap-1.5 border transition-colors ${
+                                  isRunning 
+                                    ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-500' 
+                                    : 'bg-gray-500/5 border-gray-500/20 text-gray-500'
+                                }`}
                               >
+                                <span className={`w-1.5 h-1.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-gray-500'}`}></span>
                                 {trader.trader_name}
-                                {isRunning ? (
-                                  <div className="w-2 h-2 rounded-full bg-green-400" />
-                                ) : (
-                                  <div className="w-2 h-2 rounded-full bg-gray-500" />
-                                )}
                               </div>
                             )
                           })}
@@ -494,159 +525,30 @@ export function CategoriesPage() {
                       </div>
                     )}
                   </div>
-
-                  {/* 小组组长和交易员账号信息（普通用户可以查看）- 放在操作按钮上方 */}
-                  {isUser && (categoryGroupLeader || categoryAccounts.filter(acc => 
-                    acc.category === category.name && (acc.role === 'trader_account' || acc.trader_id)
-                  ).length > 0) && (
-                    <div className="pt-4" style={{ borderTop: '1px solid #2B3139' }}>
-                      <div className="text-sm mb-3" style={{ color: '#848E9C' }}>
-                        账号信息：
-                      </div>
-                      <div className="space-y-3">
-                        {/* 小组组长账号 - 只显示一个 */}
-                        {categoryGroupLeader && (
-                          <div
-                            className="flex items-center justify-between p-3 rounded-lg"
-                            style={{
-                              background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(34, 197, 94, 0.05))',
-                              border: '1px solid rgba(16, 185, 129, 0.3)',
-                            }}
-                          >
-                            <div className="flex-1 min-w-0">
-                              <div className="font-medium text-sm" style={{ color: '#EAECEF' }}>
-                                {categoryGroupLeader.email}
-                              </div>
-                              <div className="text-xs" style={{ color: '#848E9C' }}>
-                                管理的交易员: {categoryGroupLeader.trader_count}个
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => {
-                                  // 从categoryAccounts中找到对应的小组组长账号
-                                  const groupLeaderAccount = categoryAccounts.find(
-                                    acc => acc.category === category.name && acc.role === 'group_leader' && acc.email === categoryGroupLeader.email
-                                  )
-                                  if (groupLeaderAccount) {
-                                    handleViewAccountInfo(groupLeaderAccount.id)
-                                  } else if (categoryGroupLeader.id) {
-                                    handleViewAccountInfo(categoryGroupLeader.id)
-                                  } else {
-                                    showToast('无法找到小组组长账号信息', 'error')
-                                  }
-                                }}
-                                className="px-3 py-1.5 rounded text-xs font-semibold transition-all hover:scale-105 flex items-center gap-1"
-                                style={{
-                                  background: 'rgba(139, 92, 246, 0.1)',
-                                  color: '#8B5CF6',
-                                  border: '1px solid rgba(139, 92, 246, 0.3)',
-                                }}
-                              >
-                                <Eye className="w-3 h-3" />
-                                查看
-                              </button>
-                              <span
-                                className="px-2 py-1 rounded text-xs"
-                                style={{
-                                  background: 'rgba(16, 185, 129, 0.1)',
-                                  color: '#10B981',
-                                  border: '1px solid rgba(16, 185, 129, 0.3)',
-                                }}
-                              >
-                                小组组长
-                              </span>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* 交易员账号列表 */}
-                        {categoryAccounts.filter(acc => {
-                          // 交易员账号：role === 'trader_account' 或有 trader_id
-                          return acc.category === category.name && (acc.role === 'trader_account' || acc.trader_id)
-                        }).map((account) => (
-                          <div
-                            key={account.id}
-                            className="flex items-center justify-between p-3 rounded-lg"
-                            style={{
-                              background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(147, 51, 234, 0.05))',
-                              border: '1px solid rgba(59, 130, 246, 0.3)',
-                            }}
-                          >
-                            <div className="flex-1 min-w-0">
-                              <div className="font-medium text-sm" style={{ color: '#EAECEF' }}>
-                                {account.email}
-                              </div>
-                              <div className="text-xs" style={{ color: '#848E9C' }}>
-                                {account.trader_id ? `关联交易员ID: ${account.trader_id}` : '交易员账号'}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => handleViewAccountInfo(account.id)}
-                                className="px-3 py-1.5 rounded text-xs font-semibold transition-all hover:scale-105 flex items-center gap-1"
-                                style={{
-                                  background: 'rgba(139, 92, 246, 0.1)',
-                                  color: '#8B5CF6',
-                                  border: '1px solid rgba(139, 92, 246, 0.3)',
-                                }}
-                              >
-                                <Eye className="w-3 h-3" />
-                                查看
-                              </button>
-                              <span
-                                className="px-2 py-1 rounded text-xs"
-                                style={{
-                                  background: 'rgba(59, 130, 246, 0.1)',
-                                  color: '#3B82F6',
-                                  border: '1px solid rgba(59, 130, 246, 0.3)',
-                                }}
-                              >
-                                交易员账号
-                              </span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Actions - 操作按钮 - 放在最底部 */}
-                  {isUser && (
-                    <div className="flex flex-col gap-2 pt-4" style={{ borderTop: '1px solid #2B3139' }}>
-                      {/* 只有当没有小组组长时才显示创建组长按钮 */}
-                      {!categoryGroupLeader && (
-                        <button
-                          onClick={() => {
-                            setSelectedCategoryForGroupLeader(category)
-                            setShowCreateGroupLeaderModal(true)
-                          }}
-                          className="px-3 py-2 rounded text-sm font-semibold transition-all hover:scale-105 flex items-center justify-center gap-2 w-full"
-                          style={{
-                            background: 'rgba(16, 185, 129, 0.1)',
-                            color: '#10B981',
-                            border: '1px solid rgba(16, 185, 129, 0.3)',
-                          }}
-                        >
-                          <UserPlus className="w-4 h-4" />
-                          创建组长
-                        </button>
-                      )}
-                      <button
-                        onClick={() => handleDeleteCategory(category.id, category.name)}
-                        className="px-3 py-2 rounded text-sm font-semibold transition-all hover:scale-105 flex items-center justify-center gap-2 w-full"
-                        style={{
-                          background: 'rgba(246, 70, 93, 0.1)',
-                          color: '#F6465D',
-                          border: '1px solid rgba(246, 70, 93, 0.3)',
-                        }}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        删除分类
-                      </button>
-                    </div>
-                  )}
                 </div>
+
+                {/* 底部按钮栏 - 默认透明，Hover 显示增强 */}
+                {isUser && (
+                  <div className="p-4 bg-black/20 border-t border-[#2B3139] grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => {
+                        setSelectedCategoryForGroupLeader(category)
+                        setShowCreateGroupLeaderModal(true)
+                      }}
+                      className="px-3 py-2 rounded-xl text-xs font-bold transition-all bg-[#2B3139] hover:bg-indigo-500 hover:text-white text-indigo-400 flex items-center justify-center gap-2"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      {categoryGroupLeader ? '重设组长' : '配置组长'}
+                    </button>
+                    <button
+                      onClick={() => handleDeleteCategory(category.id, category.name)}
+                      className="px-3 py-2 rounded-xl text-xs font-bold transition-all bg-[#2B3139] hover:bg-rose-500 hover:text-white text-rose-400 flex items-center justify-center gap-2"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      移除分类
+                    </button>
+                  </div>
+                )}
               </div>
             )
           })

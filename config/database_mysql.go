@@ -37,9 +37,17 @@ func NewMySQLDatabase(dsn string) (*Database, error) {
 		return nil, fmt.Errorf("创建MySQL表失败: %w", err)
 	}
 
+	// 设置全局实例
+	GlobalDB = database
+
 	// 自动迁移 trader_strategy_status 表结构 (从单策略升级为多策略)
 	if err := database.migrateTraderStrategyStatus(); err != nil {
 		log.Printf("⚠️ 迁移 trader_strategy_status 表结构失败(非致命): %v", err)
+	}
+
+	// 【新增】自动迁移 trader_strategy_status 增加 symbol 列
+	if err := database.migrateTraderStrategyStatusAddSymbol(); err != nil {
+		log.Printf("⚠️ 迁移 trader_strategy_status 增加 symbol 列失败(非致命): %v", err)
 	}
 
 	// 执行数据库迁移（必须在创建表之后，初始化数据之前）
@@ -203,6 +211,7 @@ func (d *Database) createMySQLTables() error {
 			id BIGINT AUTO_INCREMENT PRIMARY KEY,
 			trader_id VARCHAR(255) NOT NULL,
 			strategy_id VARCHAR(255) NOT NULL DEFAULT '',
+			symbol VARCHAR(50) NOT NULL DEFAULT '',
 			status VARCHAR(50) DEFAULT 'WAITING', -- WAITING, ENTRY, ADD_1, ADD_2, CLOSED
 			entry_price DOUBLE DEFAULT 0,
 			quantity DOUBLE DEFAULT 0,
@@ -237,6 +246,19 @@ func (d *Database) createMySQLTables() error {
 			FOREIGN KEY (trader_id) REFERENCES traders(id) ON DELETE CASCADE,
 			INDEX idx_strategy_decision_trader (trader_id, decision_time),
 			INDEX idx_strategy_decision_strategy (strategy_id, decision_time)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+		// 全量解析信号记录表 (持久化所有邮件解析结果)
+		`CREATE TABLE IF NOT EXISTS parsed_signals (
+			id BIGINT AUTO_INCREMENT PRIMARY KEY,
+			signal_id VARCHAR(255) UNIQUE NOT NULL,
+			symbol VARCHAR(50) NOT NULL,
+			direction VARCHAR(20) NOT NULL,
+			received_at DATETIME NOT NULL,
+			content_json LONGTEXT NOT NULL,
+			raw_content LONGTEXT,
+			INDEX idx_symbol_time (symbol, received_at DESC),
+			INDEX idx_received_at (received_at DESC)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 
@@ -319,6 +341,32 @@ func (d *Database) migrateTraderStrategyStatus() error {
 	}
 
 	log.Println("✅ trader_strategy_status 表结构迁移完成")
+	return nil
+}
+
+// migrateTraderStrategyStatusAddSymbol 为 trader_strategy_status 增加 symbol 列
+func (d *Database) migrateTraderStrategyStatusAddSymbol() error {
+	var count int
+	err := d.db.QueryRow(`
+		SELECT COUNT(*) 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+		  AND TABLE_NAME = 'trader_strategy_status' 
+		  AND COLUMN_NAME = 'symbol'
+	`).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil // 已存在
+	}
+
+	log.Println("🔄 开始迁移 trader_strategy_status 增加 symbol 列...")
+	_, err = d.db.Exec("ALTER TABLE trader_strategy_status ADD COLUMN symbol VARCHAR(50) NOT NULL DEFAULT '' AFTER strategy_id")
+	if err != nil {
+		return fmt.Errorf("添加 symbol 列失败: %w", err)
+	}
+	log.Println("✅ trader_strategy_status 增加 symbol 列迁移完成")
 	return nil
 }
 

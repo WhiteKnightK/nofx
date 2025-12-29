@@ -50,4 +50,7 @@ type Trader interface {
 
 	// FormatQuantity 格式化数量到正确的精度
 	FormatQuantity(symbol string, quantity float64) (string, error)
+
+	// GetOpenOrders 获取当前未成交的委托单（含止盈止损计划单）
+	GetOpenOrders(symbol string) ([]map[string]interface{}, error)
 }

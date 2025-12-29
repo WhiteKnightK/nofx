@@ -13,6 +13,8 @@ import { FAQPage } from './pages/FAQPage'
 import HeaderBar from './components/landing/HeaderBar'
 import AILearning from './components/AILearning'
 import { TraderExecutionCard } from './components/TraderExecutionCard'
+import { OrdersPanel } from './components/OrdersPanel'
+import { ParsedSignalsPanel } from './components/ParsedSignalsPanel'
 import { DecisionCard } from './components/DecisionCard'
 import { LanguageProvider, useLanguage } from './contexts/LanguageContext'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
@@ -62,8 +64,15 @@ function App() {
     return 'competition' // 默认为竞赛页面
   }
 
-  const [currentPage, setCurrentPage] = useState<Page>(getInitialPage())
-  const [selectedTraderId, setSelectedTraderId] = useState<string | undefined>()
+const [currentPage, setCurrentPage] = useState<Page>(getInitialPage())
+const [selectedTraderId, setSelectedTraderId] = useState<string | undefined>(() => {
+  // 优先从本地存储恢复上次查看的交易员
+  if (typeof window !== 'undefined') {
+    const lastId = localStorage.getItem('last_selected_trader_id')
+    return lastId || undefined
+  }
+  return undefined
+})
   const [lastUpdate, setLastUpdate] = useState<string>('--:--:--')
 
   // 监听URL变化，同步页面状态
@@ -116,12 +125,41 @@ function App() {
     }
   )
 
-  // 当获取到traders后，设置默认选中第一个
-  useEffect(() => {
-    if (traders && traders.length > 0 && !selectedTraderId) {
-      setSelectedTraderId(traders[0].trader_id)
+// 当获取到traders后，根据本地记忆/默认规则设置选中交易员
+useEffect(() => {
+  if (!traders || traders.length === 0) return
+
+  // 已经有选中的 Trader，则只需校验是否仍然存在
+  if (selectedTraderId) {
+    const stillExists = traders.some((t) => t.trader_id === selectedTraderId)
+    if (!stillExists) {
+      const fallbackId = traders[0].trader_id
+      setSelectedTraderId(fallbackId)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('last_selected_trader_id', fallbackId)
+      }
     }
-  }, [traders, selectedTraderId])
+    return
+  }
+
+  // 没有选中记录时，尝试从本地存储恢复
+  let initialId: string | undefined
+  if (typeof window !== 'undefined') {
+    const lastId = localStorage.getItem('last_selected_trader_id')
+    if (lastId && traders.some((t) => t.trader_id === lastId)) {
+      initialId = lastId
+    }
+  }
+
+  if (!initialId) {
+    initialId = traders[0].trader_id
+  }
+
+  setSelectedTraderId(initialId)
+  if (typeof window !== 'undefined' && initialId) {
+    localStorage.setItem('last_selected_trader_id', initialId)
+  }
+}, [traders, selectedTraderId])
 
   // 如果在trader页面，获取该trader的数据
   const { data: status } = useSWR<SystemStatus>(
@@ -159,23 +197,6 @@ function App() {
       dedupingInterval: 10000, // 10秒去重，防止短时间内重复请求
     }
   )
-
-  const { data: decisionsData } = useSWR<{
-    decisions: StrategyDecisionHistory[]
-    total: number
-  }>(
-    currentPage === 'trader' && selectedTraderId
-      ? `strategy-decisions-${selectedTraderId}`
-      : null,
-    () => api.getStrategyDecisions(selectedTraderId!),
-    {
-      refreshInterval: 30000,
-      revalidateOnFocus: false,
-      dedupingInterval: 20000,
-    }
-  )
-  
-  const decisions = decisionsData?.decisions || []
 
   const { data: stats } = useSWR<Statistics>(
     currentPage === 'trader' && selectedTraderId
@@ -360,6 +381,9 @@ function App() {
           <AITradersPage
             onTraderSelect={(traderId) => {
               setSelectedTraderId(traderId)
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('last_selected_trader_id', traderId)
+              }
               window.history.pushState({}, '', '/dashboard')
               setRoute('/dashboard')
               setCurrentPage('trader')
@@ -373,14 +397,18 @@ function App() {
             status={status}
             account={account}
             positions={positions}
-            decisions={decisions}
             stats={stats}
             lastUpdate={lastUpdate}
             language={language}
             traders={traders}
             tradersError={tradersError}
             selectedTraderId={selectedTraderId}
-            onTraderSelect={setSelectedTraderId}
+            onTraderSelect={(traderId: string) => {
+              setSelectedTraderId(traderId)
+              if (typeof window !== 'undefined') {
+                localStorage.setItem('last_selected_trader_id', traderId)
+              }
+            }}
             onNavigateToTraders={() => {
               window.history.pushState({}, '', '/traders')
               setRoute('/traders')
@@ -416,7 +444,6 @@ function TraderDetailsPage({
   status,
   account,
   positions,
-  decisions,
   lastUpdate,
   language,
   traders,
@@ -434,22 +461,49 @@ function TraderDetailsPage({
   status?: SystemStatus
   account?: AccountInfo
   positions?: Position[]
-  decisions?: StrategyDecisionHistory[]
   stats?: Statistics
   lastUpdate: string
   language: Language
 }) {
+  // AI 决策筛选状态：latest（最新50条）| open（所有开仓）| close（所有平仓）
+  const [decisionFilter, setDecisionFilter] = useState<'latest' | 'open' | 'close'>('latest')
+  
+  // 获取决策历史（根据筛选模式动态获取）
+  const { data: decisionsData, mutate: mutateDecisions } = useSWR<{
+    decisions: StrategyDecisionHistory[]
+    total: number
+    mode: string
+  }>(
+    selectedTraderId ? `strategy-decisions-${selectedTraderId}-${decisionFilter}` : null,
+    () => api.getStrategyDecisions(selectedTraderId!, decisionFilter, 50),
+    {
+      refreshInterval: 30000,
+      revalidateOnFocus: false,
+      dedupingInterval: 20000,
+    }
+  )
+  
+  const decisions = decisionsData?.decisions || []
+  
   // Fetch active strategies and statuses for the selected trader
-  const { data: strategiesData } = useSWR(
+  const { data: strategiesData, mutate: mutateStrategies } = useSWR(
     selectedTraderId ? `activeStrategies` : null,
     api.getActiveStrategies,
-    { refreshInterval: 5000 }
+    { 
+      refreshInterval: 5000,
+      keepPreviousData: true, // 保持旧数据，防止闪烁
+      fallbackData: []        // 默认空数组
+    }
   )
 
-  const { data: strategyStatuses } = useSWR(
+  const { data: strategyStatuses, mutate: mutateStatuses } = useSWR(
     selectedTraderId ? `strategyStatuses-${selectedTraderId}` : null,
     () => api.getTraderStrategyStatuses(selectedTraderId!),
-    { refreshInterval: 5000 }
+    { 
+      refreshInterval: 5000,
+      keepPreviousData: true, // 保持旧数据，防止闪烁
+      fallbackData: []        // 默认空数组
+    }
   )
 
   // 平仓状态管理
@@ -630,6 +684,9 @@ function TraderDetailsPage({
     )
   }
 
+  // 后端已按 mode 过滤（latest/open/close），前端直接使用
+  const filteredDecisions = decisions || []
+
   return (
     <div>
       {/* Trader Header */}
@@ -767,7 +824,7 @@ function TraderDetailsPage({
 
           {/* Current Positions */}
           <div
-            className="binance-card p-6 animate-slide-in"
+            className="binance-card p-6 animate-slide-in hover:shadow-[0_0_20px_rgba(240,185,11,0.05)] transition-all duration-300"
             style={{ animationDelay: '0.15s' }}
           >
             <div className="flex items-center justify-between mb-5">
@@ -775,20 +832,32 @@ function TraderDetailsPage({
                 className="text-xl font-bold flex items-center gap-2"
                 style={{ color: '#EAECEF' }}
               >
+                <span className="w-1 h-6 bg-[#F0B90B] rounded-full mr-1"></span>
                 📈 {t('currentPositions', language)}
               </h2>
-              {positions && positions.length > 0 && (
-                <div
-                  className="text-xs px-3 py-1 rounded"
-                  style={{
-                    background: 'rgba(240, 185, 11, 0.1)',
-                    color: '#F0B90B',
-                    border: '1px solid rgba(240, 185, 11, 0.2)',
-                  }}
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={() => window.location.reload()}
+                  className="p-1.5 rounded hover:bg-[#2B3139] transition-colors"
+                  title="刷新"
                 >
-                  {positions.length} {t('active', language)}
-                </div>
-              )}
+                  <svg className="w-4 h-4 text-[#848E9C] hover:text-[#F0B90B]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+                {positions && positions.length > 0 && (
+                  <div
+                    className="text-xs px-3 py-1 rounded font-bold"
+                    style={{
+                      background: 'rgba(240, 185, 11, 0.1)',
+                      color: '#F0B90B',
+                      border: '1px solid rgba(240, 185, 11, 0.2)',
+                    }}
+                  >
+                    {positions.length} {t('active', language)}
+                  </div>
+                )}
+              </div>
             </div>
             {positions && positions.length > 0 ? (
               <div className="overflow-x-auto">
@@ -945,9 +1014,9 @@ function TraderDetailsPage({
         </div>
         {/* 左侧结束 */}
 
-        {/* 右侧：Recent Decisions - 卡片容器 */}
+      {/* 右侧：Recent Decisions - 卡片容器 */}
         <div
-          className="binance-card p-6 animate-slide-in h-fit lg:sticky lg:top-24 lg:max-h-[calc(100vh-120px)]"
+          className="binance-card p-6 animate-slide-in h-fit lg:sticky lg:top-24 lg:max-h-[calc(100vh-120px)] hover:shadow-[0_0_20px_rgba(99,102,241,0.05)] transition-all duration-300"
           style={{ animationDelay: '0.2s' }}
         >
           {/* 标题 */}
@@ -964,10 +1033,20 @@ function TraderDetailsPage({
             >
               🧠
             </div>
-            <div>
-              <h2 className="text-xl font-bold" style={{ color: '#EAECEF' }}>
-                {t('recentDecisions', language)}
-              </h2>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold" style={{ color: '#EAECEF' }}>
+                  {t('recentDecisions', language)}
+                </h2>
+                <button 
+                  onClick={() => mutateDecisions()}
+                  className="p-1 rounded hover:bg-[#2B3139] transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5 text-[#848E9C] hover:text-[#6366F1]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              </div>
               {decisions && decisions.length > 0 && (
                 <div className="text-xs" style={{ color: '#848E9C' }}>
                   {t('lastCycles', language, { count: decisions.length })}
@@ -976,13 +1055,51 @@ function TraderDetailsPage({
             </div>
           </div>
 
+          {/* 决策筛选器 */}
+          <div
+            className="flex items-center gap-2 mb-3 text-xs"
+            style={{ color: '#848E9C' }}
+          >
+            <span>筛选决策:</span>
+            <button
+              className={`px-2 py-0.5 rounded border text-xs ${
+                decisionFilter === 'latest'
+                  ? 'border-[#F0B90B] text-[#F0B90B] bg-[#F0B90B]/10'
+                  : 'border-transparent hover:border-[#2B3139]'
+              }`}
+              onClick={() => setDecisionFilter('latest')}
+            >
+              最新50条
+            </button>
+            <button
+              className={`px-2 py-0.5 rounded border text-xs ${
+                decisionFilter === 'open'
+                  ? 'border-green-500 text-green-400 bg-green-500/10'
+                  : 'border-transparent hover:border-[#2B3139]'
+              }`}
+              onClick={() => setDecisionFilter('open')}
+            >
+              所有开仓
+            </button>
+            <button
+              className={`px-2 py-0.5 rounded border text-xs ${
+                decisionFilter === 'close'
+                  ? 'border-red-500 text-red-400 bg-red-500/10'
+                  : 'border-transparent hover:border-[#2B3139]'
+              }`}
+              onClick={() => setDecisionFilter('close')}
+            >
+              所有平仓
+            </button>
+          </div>
+
           {/* 决策列表 - 可滚动 */}
           <div
             className="space-y-4 overflow-y-auto pr-2"
             style={{ maxHeight: 'calc(100vh - 280px)' }}
           >
-            {decisions && decisions.length > 0 ? (
-              decisions.map((decision: any, i: number) => (
+            {filteredDecisions && filteredDecisions.length > 0 ? (
+              filteredDecisions.map((decision: any, i: number) => (
                 <DecisionCard
                   key={i}
                   decision={decision}
@@ -1011,35 +1128,147 @@ function TraderDetailsPage({
 
       {/* Trader Execution Status - Multi-Strategy List */}
       <div className="mb-6 animate-slide-in" style={{ animationDelay: '0.25s' }}>
-        <h3 className="text-xl font-bold text-[#EAECEF] mb-4 flex items-center gap-2">
-            🚀 活跃策略池 ({strategiesData?.length || 0})
-        </h3>
-        {strategiesData && strategiesData.length > 0 ? (
-            strategiesData.map((item: any, idx: number) => {
-                const status = strategyStatuses?.find((s: any) => s.strategy_id === item.strategy.signal_id);
-                // 如果没有 signal_id，尝试用 symbol 匹配 (兼容旧数据)
-                const fallbackStatus = !status ? strategyStatuses?.find((s: any) => s.strategy_id === '' && !s.strategy_id) : null;
-                // 为当前策略匹配对应持仓（用于入场价 & 盈亏展示）
-                const symbolPosition = positions?.find((p) => p.symbol === item.strategy.symbol);
-                
-                return (
-                    <TraderExecutionCard 
-                        key={item.strategy.signal_id || idx}
-                        traderId={selectedTraderId!}
-                        strategy={item.strategy}
-                        currentPrice={item.current_price}
-                        updatedAt={item.updated_at}
-                        status={status || fallbackStatus}
-                        position={symbolPosition}
+        {(() => {
+          const activeRenderList = (strategiesData || []).filter((item: any) => {
+            const status = strategyStatuses?.find((s: any) => s.strategy_id === item.strategy.signal_id);
+            const fallbackStatus = !status
+              ? strategyStatuses?.find((s: any) => s.strategy_id === '' && !s.strategy_id)
+              : null;
+            const finalStatus = status || fallbackStatus;
+            return !(finalStatus && finalStatus.status === 'CLOSED');
+          });
+
+          return (
+            <>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold text-[#EAECEF] flex items-center gap-2">
+                    <span className="w-1 h-6 bg-[#6366F1] rounded-full mr-1"></span>
+                    🚀 活跃策略池 ({activeRenderList.length})
+                </h3>
+                <button 
+                  onClick={() => {
+                    mutateStrategies();
+                    mutateStatuses();
+                  }}
+                  className="p-1.5 rounded hover:bg-[#2B3139] transition-colors"
+                  title="强制刷新"
+                >
+                  <svg className="w-4 h-4 text-[#848E9C] hover:text-[#6366F1]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              </div>
+              {activeRenderList.length > 0 ? (
+                activeRenderList.map((item: any, idx: number) => {
+                  const status = strategyStatuses?.find((s: any) => s.strategy_id === item.strategy.signal_id);
+                  const fallbackStatus = !status
+                    ? strategyStatuses?.find((s: any) => s.strategy_id === '' && !s.strategy_id)
+                    : null;
+                  const finalStatus = status || fallbackStatus;
+                  const symbolPosition = positions?.find((p) => p.symbol === item.strategy.symbol);
+
+                  return (
+                    <TraderExecutionCard
+                      key={item.strategy.signal_id || idx}
+                      strategy={item.strategy}
+                      currentPrice={item.current_price}
+                      updatedAt={item.updated_at}
+                      status={finalStatus}
+                      position={symbolPosition}
                     />
-                );
-            })
-        ) : (
-             <div className="bg-[#1E2329] rounded-lg border border-[#2B3139] p-8 text-center text-[#848E9C]">
-                暂无活跃策略
-             </div>
-        )}
+                  );
+                })
+              ) : (
+                <div className="bg-[#1E2329] rounded-lg border border-[#2B3139] p-8 text-center text-[#848E9C]">
+                    暂无活跃策略
+                </div>
+              )}
+            </>
+          );
+        })()}
+
+        {/* 📊 全量策略信号库 */}
+        <div className="mt-8">
+            <ParsedSignalsPanel 
+                strategyStatuses={strategyStatuses}
+            />
+        </div>
       </div>
+
+      {/* 当前委托展示（止盈止损等） */}
+      <div className="mb-6 animate-slide-in" style={{ animationDelay: '0.27s' }}>
+        <OrdersPanel traderId={selectedTrader.trader_id} />
+      </div>
+
+      {/* 历史策略列表：根据 CLOSED 状态 + 决策历史汇总 */}
+      {(() => {
+        const closedStatuses = (strategyStatuses || []).filter((s: any) => s.status === 'CLOSED')
+        if (!closedStatuses.length) return null
+
+        const closedIdSet = new Set<string>(closedStatuses.map((s: any) => s.strategy_id))
+        const used = new Set<string>()
+        const historyItems: Array<{ decision: StrategyDecisionHistory; status: any }> = []
+
+        for (const d of decisions as any[]) {
+          if (!d || !closedIdSet.has(d.strategy_id) || used.has(d.strategy_id)) continue
+          const st = closedStatuses.find((s: any) => s.strategy_id === d.strategy_id)
+          historyItems.push({ decision: d, status: st })
+          used.add(d.strategy_id)
+        }
+
+        if (!historyItems.length) return null
+
+        return (
+          <div className="mb-6 animate-slide-in" style={{ animationDelay: '0.28s' }}>
+            <h3 className="text-xl font-bold text-[#EAECEF] mb-4 flex items-center gap-2">
+              📚 历史策略 ({historyItems.length})
+            </h3>
+            <div className="space-y-3">
+              {historyItems.map(({ decision, status }) => (
+                <div
+                  key={decision.strategy_id}
+                  className="binance-card p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 border border-[#2B3139]"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="text-lg font-bold text-[#EAECEF] font-mono">
+                      {decision.symbol}
+                    </div>
+                    <div className="text-xs px-2 py-0.5 rounded-full font-mono" style={{ background: '#2B3139', color: '#C4CCD6' }}>
+                      {decision.action}
+                    </div>
+                    {status && (
+                      <div className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(132,142,156,0.15)', color: '#A0AEC0' }}>
+                        {status.status}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-6 text-xs md:text-sm text-[#A0AEC0]">
+                    <div>
+                      <div>最后决策时间</div>
+                      <div className="font-mono">
+                        {new Date(decision.decision_time as any).toLocaleString()}
+                      </div>
+                    </div>
+                    <div>
+                      <div>最后价格</div>
+                      <div className="font-mono">{decision.current_price?.toFixed?.(2) ?? decision.current_price}</div>
+                    </div>
+                    {status && (
+                      <div>
+                        <div>已实现盈亏</div>
+                        <div className="font-mono">
+                          {(status.realized_pnl ?? 0) >= 0 ? '+' : ''}
+                          {(status.realized_pnl ?? 0).toFixed(2)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* AI Learning & Performance Analysis */}
       <div className="mb-6 animate-slide-in" style={{ animationDelay: '0.3s' }}>
@@ -1064,35 +1293,36 @@ function StatCard({
   subtitle?: string
 }) {
   return (
-    <div className="stat-card animate-fade-in">
+    <div className="binance-card p-5 group hover:border-[#F0B90B]/40 transition-all duration-300">
       <div
-        className="text-xs mb-2 mono uppercase tracking-wider"
+        className="text-[11px] mb-2 font-bold uppercase tracking-[0.1em] flex items-center justify-between"
         style={{ color: '#848E9C' }}
       >
-        {title}
+        <span>{title}</span>
+        <div className="w-1 h-1 rounded-full bg-[#2B3139] group-hover:bg-[#F0B90B] transition-colors" />
       </div>
       <div
-        className="text-2xl font-bold mb-1 mono"
+        className="text-2xl font-bold mb-1 font-mono tracking-tight"
         style={{ color: '#EAECEF' }}
       >
         {value}
       </div>
-      {change !== undefined && (
-        <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between">
+        {change !== undefined ? (
           <div
-            className="text-sm mono font-bold"
+            className="text-sm font-mono font-bold flex items-center gap-1"
             style={{ color: positive ? '#0ECB81' : '#F6465D' }}
           >
-            {positive ? '▲' : '▼'} {positive ? '+' : ''}
-            {change.toFixed(2)}%
+            <span className="text-[10px]">{positive ? '▲' : '▼'}</span>
+            <span>{positive ? '+' : ''}{change.toFixed(2)}%</span>
           </div>
-        </div>
-      )}
-      {subtitle && (
-        <div className="text-xs mt-2 mono" style={{ color: '#848E9C' }}>
-          {subtitle}
-        </div>
-      )}
+        ) : <div />}
+        {subtitle && (
+          <div className="text-[11px] font-medium" style={{ color: '#5E6673' }}>
+            {subtitle}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

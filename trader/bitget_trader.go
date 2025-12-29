@@ -903,3 +903,161 @@ func (t *BitgetTrader) FormatQuantity(symbol string, quantity float64) (string, 
 	format := fmt.Sprintf("%%.%df", precision)
 	return fmt.Sprintf(format, quantity), nil
 }
+
+// GetOpenOrders 获取当前未成交的委托单（含止盈止损计划单）
+// 返回格式统一为：type (limit/market/stop_loss/take_profit), price, quantity, side, status
+func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	result := []map[string]interface{}{}
+
+	// 1. 获取普通委托单（限价/市价）
+	// GET /api/v2/mix/order/orders-pending
+	pendingParams := map[string]string{
+		"productType": "USDT-FUTURES",
+		"marginCoin":  "USDT", // 必填：保证金币种
+	}
+	// symbol 允许为空，为空时查询账号下所有该品种的未成交委托
+	if symbol != "" {
+		pendingParams["symbol"] = symbol
+	}
+	pendingBody, err := t.request("GET", "/api/v2/mix/order/orders-pending", pendingParams, nil)
+
+	if err != nil {
+		log.Printf("⚠️ [委托查询] 获取普通委托单失败 symbol=%s err=%v", symbol, err)
+	} else {
+		var pendingResp struct {
+			Code string `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				EntrustedList []struct {
+					OrderId    string `json:"orderId"`
+					ClientOid  string `json:"clientOid"`
+					Symbol     string `json:"symbol"`
+					Size       string `json:"size"`
+					FilledSize string `json:"filledSize"`
+					Price      string `json:"price"`
+					OrderType  string `json:"orderType"` // limit, market
+					Side       string `json:"side"`      // open_long, open_short, close_long, close_short
+					Status     string `json:"status"`    // live, partially_filled
+					CTime      string `json:"cTime"`     // 创建时间(毫秒时间戳)
+					PriceAvg   string `json:"priceAvg"`  // 成交均价
+				} `json:"entrustedList"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(pendingBody, &pendingResp); err != nil {
+			log.Printf("⚠️ [委托查询] 解析普通委托响应失败 symbol=%s err=%v body=%s", symbol, err, string(pendingBody))
+		} else if pendingResp.Code != "00000" {
+			log.Printf("⚠️ [委托查询] Bitget返回错误 symbol=%s code=%s msg=%s", symbol, pendingResp.Code, pendingResp.Msg)
+		} else {
+			log.Printf("✓ [委托查询] 普通委托: %s 找到 %d 个", symbol, len(pendingResp.Data.EntrustedList))
+			for _, order := range pendingResp.Data.EntrustedList {
+				price, _ := strconv.ParseFloat(order.Price, 64)
+				quantity, _ := strconv.ParseFloat(order.Size, 64)
+				filledSize, _ := strconv.ParseFloat(order.FilledSize, 64)
+				avgPrice, _ := strconv.ParseFloat(order.PriceAvg, 64)
+
+				result = append(result, map[string]interface{}{
+					"order_id":       order.OrderId,
+					"symbol":         order.Symbol,
+					"type":           order.OrderType,
+					"price":          price,
+					"quantity":       quantity,
+					"filled_size":    filledSize,
+					"avg_price":      avgPrice,
+					"side":           order.Side,
+					"status":         order.Status,
+					"created_at":     order.CTime,
+					"client_oid":     order.ClientOid,
+					"order_category": "normal",
+				})
+			}
+		}
+	}
+
+	// 2. 获取计划委托单（止盈/止损）
+	// 由于Bitget要求planType必填，且不支持一次查询所有，我们需要分别查询 "profit_plan" (止盈) 和 "loss_plan" (止损)
+	planTypes := []string{"profit_plan", "loss_plan"}
+
+	for _, pType := range planTypes {
+		planParams := map[string]string{
+			"productType": "USDT-FUTURES",
+			"marginCoin":  "USDT",
+			"planType":    pType, // 分别查询
+		}
+		// symbol 允许为空，为空时查询该planType下所有交易对
+		if symbol != "" {
+			planParams["symbol"] = symbol
+		}
+
+		planBody, err := t.request("GET", "/api/v2/mix/order/orders-plan-pending", planParams, nil)
+
+		if err != nil {
+			// 忽略部分错误，继续查询下一个
+			log.Printf("⚠️ [委托查询] 获取计划委托(%s)失败 symbol=%s err=%v", pType, symbol, err)
+			continue
+		}
+
+		var planResp struct {
+			Code string `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				EntrustedList []struct {
+					OrderId      string `json:"orderId"`
+					Symbol       string `json:"symbol"`
+					PlanType     string `json:"planType"`
+					TriggerPrice string `json:"triggerPrice"`
+					Size         string `json:"size"`
+					HoldSide     string `json:"holdSide"`
+					Status       string `json:"status"`
+					CTime        string `json:"cTime"`
+				} `json:"entrustedList"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(planBody, &planResp); err != nil {
+			log.Printf("⚠️ [委托查询] 解析计划委托(%s)响应失败: %v", pType, err)
+			continue
+		}
+
+		if planResp.Code != "00000" {
+			// Code 43025 = 暂无数据，忽略
+			if planResp.Code != "43025" {
+				log.Printf("⚠️ [委托查询] Bitget返回错误(%s) code=%s msg=%s", pType, planResp.Code, planResp.Msg)
+			}
+			continue
+		}
+
+		log.Printf("✓ [委托查询] 计划委托(%s): %s 找到 %d 个", pType, symbol, len(planResp.Data.EntrustedList))
+
+		for _, plan := range planResp.Data.EntrustedList {
+			triggerPrice, _ := strconv.ParseFloat(plan.TriggerPrice, 64)
+			quantity, _ := strconv.ParseFloat(plan.Size, 64)
+
+			var orderType string
+			if plan.PlanType == "profit_plan" {
+				orderType = "take_profit"
+			} else if plan.PlanType == "loss_plan" {
+				orderType = "stop_loss"
+			} else {
+				orderType = plan.PlanType
+			}
+
+			result = append(result, map[string]interface{}{
+				"order_id":   plan.OrderId,
+				"symbol":     plan.Symbol,
+				"type":       orderType,
+				"price":      triggerPrice,
+				"quantity":   quantity,
+				"side":       plan.HoldSide,
+				"status":     plan.Status,
+				"created_at": plan.CTime,
+				// 增加计划单特有标识
+				"order_category": "plan",
+				"plan_type":      plan.PlanType,
+			})
+		}
+	}
+
+	log.Printf("✓ 获取委托单成功: %s 共 %d 个", symbol, len(result))
+	return result, nil
+}

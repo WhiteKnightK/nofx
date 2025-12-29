@@ -111,7 +111,6 @@ export function SmartContentRenderer({ content }: { content: string }) {
 }
 
 interface TraderExecutionCardProps {
-  traderId: string
   strategy: any
   currentPrice: number
   updatedAt: string
@@ -220,7 +219,7 @@ const StrategyLevelsChart = ({
     );
 };
 
-export function TraderExecutionCard({ traderId, strategy, status: traderStatus, currentPrice, updatedAt, position }: TraderExecutionCardProps) {
+export function TraderExecutionCard({ strategy, status: traderStatus, currentPrice, updatedAt, position }: TraderExecutionCardProps) {
   const [showDetails, setShowDetails] = useState(false);
   
   if (!strategy) return null;
@@ -257,12 +256,18 @@ export function TraderExecutionCard({ traderId, strategy, status: traderStatus, 
     actualPnlPercent = positionUnrealizedPnlPct
   }
 
-  // 进度条计算逻辑
+  // 进度条计算逻辑（多级止盈）
   const entryPrice = strategy.entry.price_target;
-  const tp1Price = strategy.take_profits?.[0]?.price || (isLong ? entryPrice * 1.05 : entryPrice * 0.95);
+  const tpList = (strategy.take_profits || []).map((tp: any) => tp.price).filter((p: number) => p > 0);
+  const tp1Price = tpList[0] || (isLong ? entryPrice * 1.05 : entryPrice * 0.95);
   const slPrice = strategy.stop_loss?.price || (isLong ? entryPrice * 0.95 : entryPrice * 1.05);
 
-  const totalRange = Math.abs(tp1Price - slPrice);
+  // 进度条范围使用最远止盈价（TP3）以完整展示空间
+  const farthestTp = tpList.length
+    ? (isLong ? Math.max(...tpList) : Math.min(...tpList))
+    : tp1Price;
+
+  const totalRange = Math.abs(farthestTp - slPrice);
   
   // 计算当前价格进度
   let progress = 0;
@@ -288,6 +293,15 @@ export function TraderExecutionCard({ traderId, strategy, status: traderStatus, 
   const theoreticalEntryPos = getPosition(entryPrice);
   const actualEntryPos = positionEntryPrice > 0 ? getPosition(positionEntryPrice) : -1;
 
+  // 多级 TP 在进度条上的位置
+  const tpMarkers = tpList.length
+    ? tpList.map((price: number, idx: number) => ({
+        label: `TP${idx + 1}`,
+        price,
+        pos: getPosition(price),
+      }))
+    : [{ label: 'TP1', price: tp1Price, pos: getPosition(tp1Price) }];
+
   // 状态颜色映射
   const getStatusColor = (status: string) => {
       switch (status) {
@@ -303,7 +317,7 @@ export function TraderExecutionCard({ traderId, strategy, status: traderStatus, 
   const directionLabel = isLong ? '做多' : '做空'
 
   return (
-  <>
+    <>
     <div className="bg-gradient-to-br from-[#11151A] via-[#1E2329] to-[#141A1F] rounded-2xl border border-[#2B3139] shadow-[0_18px_45px_rgba(0,0,0,0.65)] relative overflow-hidden group hover:border-[#F0B90B]/60 hover:shadow-[0_22px_60px_rgba(240,185,11,0.25)] transition-all duration-300 mb-8">
        {/* 顶部指示条 */}
        <div className={`absolute top-0 left-0 right-0 h-1 ${isLong ? 'bg-green-500' : 'bg-red-500'}`} />
@@ -350,7 +364,7 @@ export function TraderExecutionCard({ traderId, strategy, status: traderStatus, 
                               Target: {theoreticalPnlPercent > 0 ? '+' : ''}{theoreticalPnlPercent.toFixed(2)}%
                           </div>
                       </div>
-                       <div>
+                      <div>
                            <div className="text-sm text-[#848E9C] mb-1">已实现盈亏</div>
                            <div className={`text-2xl font-mono font-bold ${realizedPnL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                               {realizedPnL > 0 ? '+' : ''}{realizedPnL.toFixed(2)}
@@ -373,10 +387,14 @@ export function TraderExecutionCard({ traderId, strategy, status: traderStatus, 
                       <span className="font-mono text-base text-[#60A5FA]">{displayEntryPrice.toFixed(2)}</span>
                   </div>
                   <div className="flex flex-col">
-                      <span className="tracking-wider text-[#5E6673]">止损 / 第一止盈</span>
-                      <span className="font-mono text-base">
-                          <span className="text-[#F6465D] mr-2">{slPrice.toFixed(2)}</span>
-                          <span className="text-[#0ECB81]">{tp1Price.toFixed(2)}</span>
+                      <span className="tracking-wider text-[#5E6673]">止损 / 止盈</span>
+                      <span className="font-mono text-xs text-[#A0AEC0]">
+                          <span className="text-[#F6465D] mr-2 text-sm">SL {slPrice.toFixed(2)}</span>
+                          {tpMarkers.map((m: any) => (
+                            <span key={m.label} className="mr-2 text-[#0ECB81]">
+                              {m.label} {m.price.toFixed(2)}
+                            </span>
+                          ))}
                       </span>
                   </div>
               </div>
@@ -409,12 +427,22 @@ export function TraderExecutionCard({ traderId, strategy, status: traderStatus, 
                       </>
                   )}
 
-                  {/* TP1 标记 */}
-                  <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-green-500 rounded-full border-2 border-[#1E2329] z-10" style={{ left: '100%' }}></div>
-                  <div className="absolute -bottom-9 right-0 translate-x-1/2 flex flex-col items-center">
-                      <span className="text-xs text-green-500 font-bold">TP1 止盈</span>
-                      <span className="text-xs text-[#848E9C] font-mono">{tp1Price}</span>
-                  </div>
+                  {/* 多级 TP 标记 */}
+                  {tpMarkers.map((m: any) => (
+                    <div key={m.label}>
+                      <div
+                        className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-green-500 rounded-full border-2 border-[#1E2329] z-10"
+                        style={{ left: `${m.pos}%` }}
+                      ></div>
+                      <div
+                        className="absolute -bottom-9 -translate-x-1/2 flex flex-col items-center"
+                        style={{ left: `${m.pos}%` }}
+                      >
+                        <span className="text-xs text-green-500 font-bold">{m.label}</span>
+                        <span className="text-xs text-[#848E9C] font-mono">{m.price.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  ))}
 
                   {/* 当前价格游标 */}
                   <div 
@@ -472,7 +500,7 @@ export function TraderExecutionCard({ traderId, strategy, status: traderStatus, 
                   </div>
                   
                   <div className="text-sm text-[#5E6673] font-mono">
-                      Last Update: {new Date(traderStatus?.updated_at || globalUpdatedAt).toLocaleTimeString()}
+                      Last Update: {new Date(globalUpdatedAt).toLocaleString()}
                   </div>
               </div>
           </div>

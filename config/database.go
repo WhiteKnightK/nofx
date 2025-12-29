@@ -61,6 +61,9 @@ type Database struct {
 	isMySQL       bool // 标记是否为MySQL数据库
 }
 
+// GlobalDB 全局数据库实例，方便其他包调用
+var GlobalDB *Database
+
 // getTimeFunc 根据数据库类型返回时间函数
 func (d *Database) getTimeFunc() string {
 	if d.isMySQL {
@@ -138,6 +141,9 @@ func NewDatabase(dbPath string) (*Database, error) {
 	if err := database.initDefaultData(isMySQL); err != nil {
 		return nil, fmt.Errorf("初始化默认数据失败: %w", err)
 	}
+
+	// 设置全局实例
+	GlobalDB = database
 
 	return database, nil
 }
@@ -294,6 +300,7 @@ func (d *Database) createTables(isMySQL bool) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			trader_id TEXT NOT NULL,
 			strategy_id TEXT DEFAULT '',
+			symbol TEXT DEFAULT '',
 			status TEXT DEFAULT 'WAITING', -- WAITING, ENTRY, ADD_1, ADD_2, CLOSED
 			entry_price REAL DEFAULT 0,
 			quantity REAL DEFAULT 0,
@@ -333,6 +340,17 @@ func (d *Database) createTables(isMySQL bool) error {
 		// 为策略决策历史表创建索引
 		`CREATE INDEX IF NOT EXISTS idx_strategy_decision_trader ON strategy_decision_history(trader_id, decision_time DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_strategy_decision_strategy ON strategy_decision_history(strategy_id, decision_time DESC)`,
+
+		// 【新增】全量解析信号记录表 (持久化所有邮件解析结果)
+		`CREATE TABLE IF NOT EXISTS parsed_signals (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			signal_id TEXT UNIQUE NOT NULL,
+			symbol TEXT NOT NULL,
+			direction TEXT NOT NULL,
+			received_at DATETIME NOT NULL,
+			content_json TEXT NOT NULL,
+			raw_content TEXT
+		)`,
 
 		// 触发器：自动更新 updated_at
 		`CREATE TRIGGER IF NOT EXISTS update_users_updated_at
@@ -2213,11 +2231,23 @@ type TraderStrategyStatus struct {
 	ID          int64     `json:"id"`
 	TraderID    string    `json:"trader_id"`
 	StrategyID  string    `json:"strategy_id"`
+	Symbol      string    `json:"symbol"` // 新增字段
 	Status      string    `json:"status"`
 	EntryPrice  float64   `json:"entry_price"`
 	Quantity    float64   `json:"quantity"`
 	RealizedPnL float64   `json:"realized_pnl"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ParsedSignal 持久化的解析信号
+type ParsedSignal struct {
+	ID          int64     `json:"id"`
+	SignalID    string    `json:"signal_id"`
+	Symbol      string    `json:"symbol"`
+	Direction   string    `json:"direction"`
+	ReceivedAt  time.Time `json:"received_at"`
+	ContentJSON string    `json:"content_json"` // JSON 字符串
+	RawContent  string    `json:"raw_content"`
 }
 
 // StrategyDecisionHistory 策略决策历史
@@ -2249,9 +2279,10 @@ func (d *Database) UpdateTraderStrategyStatus(status *TraderStrategyStatus) erro
 	var query string
 	if d.isMySQL {
 		query = `
-			INSERT INTO trader_strategy_status (trader_id, strategy_id, status, entry_price, quantity, realized_pnl, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO trader_strategy_status (trader_id, strategy_id, symbol, status, entry_price, quantity, realized_pnl, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE
+			symbol=VALUES(symbol),
 			status=VALUES(status),
 			entry_price=VALUES(entry_price),
 			quantity=VALUES(quantity),
@@ -2260,9 +2291,10 @@ func (d *Database) UpdateTraderStrategyStatus(status *TraderStrategyStatus) erro
 		`
 	} else {
 		query = `
-			INSERT INTO trader_strategy_status (trader_id, strategy_id, status, entry_price, quantity, realized_pnl, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO trader_strategy_status (trader_id, strategy_id, symbol, status, entry_price, quantity, realized_pnl, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(trader_id, strategy_id) DO UPDATE SET
+			symbol=excluded.symbol,
 			status=excluded.status,
 			entry_price=excluded.entry_price,
 			quantity=excluded.quantity,
@@ -2271,13 +2303,13 @@ func (d *Database) UpdateTraderStrategyStatus(status *TraderStrategyStatus) erro
 		`
 	}
 
-	_, err := d.db.Exec(query, status.TraderID, status.StrategyID, status.Status, status.EntryPrice, status.Quantity, status.RealizedPnL, time.Now())
+	_, err := d.db.Exec(query, status.TraderID, status.StrategyID, status.Symbol, status.Status, status.EntryPrice, status.Quantity, status.RealizedPnL, time.Now())
 	return err
 }
 
 // GetTraderStrategyStatuses 获取交易员的所有策略状态
 func (d *Database) GetTraderStrategyStatuses(traderID string) ([]*TraderStrategyStatus, error) {
-	query := `SELECT id, trader_id, strategy_id, status, entry_price, quantity, realized_pnl, updated_at FROM trader_strategy_status WHERE trader_id = ?`
+	query := `SELECT id, trader_id, strategy_id, symbol, status, entry_price, quantity, realized_pnl, updated_at FROM trader_strategy_status WHERE trader_id = ?`
 	rows, err := d.db.Query(query, traderID)
 	if err != nil {
 		return nil, err
@@ -2287,7 +2319,7 @@ func (d *Database) GetTraderStrategyStatuses(traderID string) ([]*TraderStrategy
 	var results []*TraderStrategyStatus
 	for rows.Next() {
 		var s TraderStrategyStatus
-		if err := rows.Scan(&s.ID, &s.TraderID, &s.StrategyID, &s.Status, &s.EntryPrice, &s.Quantity, &s.RealizedPnL, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.TraderID, &s.StrategyID, &s.Symbol, &s.Status, &s.EntryPrice, &s.Quantity, &s.RealizedPnL, &s.UpdatedAt); err != nil {
 			return nil, err
 		}
 		results = append(results, &s)
@@ -2348,6 +2380,84 @@ func (d *Database) GetStrategyDecisionHistory(traderID string, limit int) ([]*St
 	`
 	
 	rows, err := d.db.Query(query, traderID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var histories []*StrategyDecisionHistory
+	for rows.Next() {
+		h := &StrategyDecisionHistory{}
+		err := rows.Scan(
+			&h.ID, &h.TraderID, &h.StrategyID, &h.DecisionTime, &h.Action, &h.Symbol,
+			&h.CurrentPrice, &h.TargetPrice, &h.PositionSide, &h.PositionQty,
+			&h.AmountPercent, &h.Reason, &h.RSI1H, &h.RSI4H, &h.MACD4H,
+			&h.SystemPrompt, &h.InputPrompt, &h.RawAIResponse,
+			&h.ExecutionSuccess, &h.ExecutionError,
+		)
+		if err != nil {
+			return nil, err
+		}
+		histories = append(histories, h)
+	}
+	
+	return histories, nil
+}
+
+// GetAllOpenStrategyDecisions 获取所有开仓/加仓决策（不限制数量，SQL级别过滤）
+func (d *Database) GetAllOpenStrategyDecisions(traderID string) ([]*StrategyDecisionHistory, error) {
+	query := `
+		SELECT id, trader_id, strategy_id, decision_time, action, symbol,
+		       current_price, target_price, position_side, position_qty,
+		       amount_percent, reason, rsi_1h, rsi_4h, macd_4h,
+		       system_prompt, input_prompt, raw_ai_response,
+		       execution_success, execution_error
+		FROM strategy_decision_history
+		WHERE trader_id = ?
+		  AND (UPPER(action) LIKE '%OPEN%' OR UPPER(action) LIKE '%ADD%')
+		ORDER BY decision_time DESC
+	`
+	
+	rows, err := d.db.Query(query, traderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var histories []*StrategyDecisionHistory
+	for rows.Next() {
+		h := &StrategyDecisionHistory{}
+		err := rows.Scan(
+			&h.ID, &h.TraderID, &h.StrategyID, &h.DecisionTime, &h.Action, &h.Symbol,
+			&h.CurrentPrice, &h.TargetPrice, &h.PositionSide, &h.PositionQty,
+			&h.AmountPercent, &h.Reason, &h.RSI1H, &h.RSI4H, &h.MACD4H,
+			&h.SystemPrompt, &h.InputPrompt, &h.RawAIResponse,
+			&h.ExecutionSuccess, &h.ExecutionError,
+		)
+		if err != nil {
+			return nil, err
+		}
+		histories = append(histories, h)
+	}
+	
+	return histories, nil
+}
+
+// GetAllCloseStrategyDecisions 获取所有平仓决策（不限制数量，SQL级别过滤）
+func (d *Database) GetAllCloseStrategyDecisions(traderID string) ([]*StrategyDecisionHistory, error) {
+	query := `
+		SELECT id, trader_id, strategy_id, decision_time, action, symbol,
+		       current_price, target_price, position_side, position_qty,
+		       amount_percent, reason, rsi_1h, rsi_4h, macd_4h,
+		       system_prompt, input_prompt, raw_ai_response,
+		       execution_success, execution_error
+		FROM strategy_decision_history
+		WHERE trader_id = ?
+		  AND (UPPER(action) LIKE '%CLOSE%' OR UPPER(action) LIKE '%EMERGENCY_CLOSE%')
+		ORDER BY decision_time DESC
+	`
+	
+	rows, err := d.db.Query(query, traderID)
 	if err != nil {
 		return nil, err
 	}

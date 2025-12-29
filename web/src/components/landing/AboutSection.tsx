@@ -102,7 +102,7 @@ export default function AboutSection({ language }: AboutSectionProps) {
             >
               <Typewriter
                 lines={[
-                  '> Initializing NoFX Core System...',
+                  '> Initializing Core System...',
                   '> Loading Strategy Modules... [OK]',
                   '> Connecting to Exchange API... [OK]',
                   '> AI Neural Network Loaded (Model: DeepSeek-V3)',

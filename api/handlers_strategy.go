@@ -23,7 +23,7 @@ func (s *Server) handleGetActiveStrategies(c *gin.Context) {
 	}
 
 	strategies := signal.GlobalManager.ListActiveStrategies()
-	var result []StrategyResponse
+	result := make([]StrategyResponse, 0) // 初始化为空切片而不是 nil，确保 JSON 返回 [] 而不是 null
 
 	for _, snap := range strategies {
 		if snap != nil && snap.Strategy != nil {
@@ -54,4 +54,14 @@ func (s *Server) handleGetTraderStrategyStatuses(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, statuses)
+}
+
+// handleGetParsedSignals 获取所有已解析的信号历史
+func (s *Server) handleGetParsedSignals(c *gin.Context) {
+	signals, err := s.database.GetAllParsedSignals(100) // 默认返回最近100条
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, signals)
 }

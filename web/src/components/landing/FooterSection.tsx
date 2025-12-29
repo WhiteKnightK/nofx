@@ -16,7 +16,7 @@ export default function FooterSection({ language }: FooterSectionProps) {
         <div className="flex flex-col items-center justify-center gap-4">
           {/* Brand */}
           <div className="flex items-center gap-3">
-            <img src="/icons/nofx.svg" alt="NOFX Logo" className="w-8 h-8" />
+            <img src="/icons/nofx.svg" alt="Platform Logo" className="w-8 h-8" />
             <div>
               <div className="text-lg font-bold" style={{ color: '#EAECEF' }}>
                 NOFX
@@ -32,7 +32,7 @@ export default function FooterSection({ language }: FooterSectionProps) {
             className="text-center text-xs mt-4"
             style={{ color: 'var(--text-tertiary)' }}
           >
-            <p>&copy; {new Date().getFullYear()} NoFX. All rights reserved.</p>
+            <p>&copy; {new Date().getFullYear()} AI Trading OS. All rights reserved.</p>
             <p className="mt-1">{t('footerWarning', language)}</p>
           </div>
         </div>

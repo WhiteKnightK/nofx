@@ -776,6 +776,13 @@ func (t *HyperliquidTrader) FormatQuantity(symbol string, quantity float64) (str
 	return fmt.Sprintf(formatStr, quantity), nil
 }
 
+// GetOpenOrders 获取当前未成交的委托单（Hyperliquid暂不实现，仅为接口兼容）
+func (t *HyperliquidTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	log.Printf("⚠️  Hyperliquid GetOpenOrders 暂不实现")
+	return []map[string]interface{}{}, nil
+}
+
+
 // getSzDecimals 获取币种的数量精度
 func (t *HyperliquidTrader) getSzDecimals(coin string) int {
 	if t.meta == nil {

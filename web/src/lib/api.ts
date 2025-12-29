@@ -288,6 +288,20 @@ export const api = {
     return res.json()
   },
 
+  // 获取委托列表（普通委托 + 止盈止损计划委托）
+  async getOrders(traderId?: string, symbol?: string): Promise<any> {
+    let url = `${API_BASE}/orders`
+    const params = new URLSearchParams()
+    if (traderId) params.append('trader_id', traderId)
+    if (symbol) params.append('symbol', symbol)
+    if (params.toString()) {
+      url += `?${params.toString()}`
+    }
+    const res = await httpClient.get(url, getAuthHeaders())
+    if (!res.ok) throw new Error('获取委托列表失败')
+    return res.json()
+  },
+
   // 获取决策日志（支持trader_id）
   async getDecisions(traderId?: string): Promise<DecisionRecord[]> {
     const url = traderId
@@ -677,6 +691,13 @@ export const api = {
     return res.json()
   },
 
+  // 获取全量解析信号历史
+  async getParsedSignals(): Promise<any[]> {
+    const res = await httpClient.get(`${API_BASE}/strategy/signals`, getAuthHeaders())
+    if (!res.ok) throw new Error('获取信号历史失败')
+    return res.json()
+  },
+
   // 获取交易员策略状态
   async getTraderStrategyStatus(traderId: string): Promise<any> {
     const res = await httpClient.get(
@@ -697,12 +718,13 @@ export const api = {
     return res.json()
   },
 
-  // 获取策略决策历史
-  async getStrategyDecisions(traderId: string, limit: number = 50): Promise<any> {
-    const res = await httpClient.get(
-      `${API_BASE}/traders/${traderId}/strategy-decisions?limit=${limit}`,
-      getAuthHeaders()
-    )
+  // 获取策略决策历史（支持模式筛选：latest/open/close）
+  async getStrategyDecisions(traderId: string, mode: string = 'latest', limit: number = 50): Promise<any> {
+    let url = `${API_BASE}/traders/${traderId}/strategy-decisions?mode=${mode}`
+    if (mode === 'latest') {
+      url += `&limit=${limit}`
+    }
+    const res = await httpClient.get(url, getAuthHeaders())
     if (!res.ok) throw new Error('获取策略决策历史失败')
     return res.json()
   },

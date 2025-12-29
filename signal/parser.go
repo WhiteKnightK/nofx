@@ -65,17 +65,29 @@ func (p *Parser) Parse(emailContent string) (*SignalDecision, error) {
 		return nil, fmt.Errorf("AI调用失败: %w", err)
 	}
 
-	// 清洗 Markdown 代码块标记
-	cleanJSON := strings.TrimSpace(resp)
-	cleanJSON = strings.TrimPrefix(cleanJSON, "```json")
-	cleanJSON = strings.TrimPrefix(cleanJSON, "```")
-	cleanJSON = strings.TrimSuffix(cleanJSON, "```")
-	cleanJSON = strings.TrimSpace(cleanJSON)
+	// 清洗 Markdown 代码块标记并寻找最外层的 {}
+	resp = strings.TrimSpace(resp)
+	
+	// 尝试提取最外层的大括号内容（防止AI输出多余文字）
+	start := strings.Index(resp, "{")
+	end := strings.LastIndex(resp, "}")
+	
+	var cleanJSON string
+	if start != -1 && end != -1 && end > start {
+		cleanJSON = resp[start : end+1]
+	} else {
+		// 备选方案：原来的清洗逻辑
+		cleanJSON = resp
+		cleanJSON = strings.TrimPrefix(cleanJSON, "```json")
+		cleanJSON = strings.TrimPrefix(cleanJSON, "```")
+		cleanJSON = strings.TrimSuffix(cleanJSON, "```")
+		cleanJSON = strings.TrimSpace(cleanJSON)
+	}
 
 	// 反序列化
 	var decision SignalDecision
 	if err := json.Unmarshal([]byte(cleanJSON), &decision); err != nil {
-		log.Printf("解析失败的JSON: %s", cleanJSON)
+		log.Printf("❌ 解析失败的原始AI回复 (长度: %d): \n%s", len(resp), resp)
 		return nil, fmt.Errorf("JSON解析失败: %w", err)
 	}
 
