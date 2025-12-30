@@ -51,6 +51,7 @@ type DatabaseInterface interface {
 	ValidateBetaCode(code string) (bool, error)
 	UseBetaCode(code, userEmail string) error
 	GetBetaCodeStats() (total, used int, err error)
+	IsEmailWhitelisted(email string) (bool, error)
 	Close() error
 }
 
@@ -350,6 +351,13 @@ func (d *Database) createTables(isMySQL bool) error {
 			received_at DATETIME NOT NULL,
 			content_json TEXT NOT NULL,
 			raw_content TEXT
+		)`,
+
+		// 【新增】邮件发送者白名单
+		`CREATE TABLE IF NOT EXISTS email_whitelist (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			email TEXT UNIQUE NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
 		// 触发器：自动更新 updated_at
@@ -2523,4 +2531,20 @@ func (d *Database) GetStrategyDecisionsByStrategyID(strategyID string, limit int
 	}
 	
 	return histories, nil
+}
+
+// IsEmailWhitelisted 检查邮箱是否在白名单中
+func (d *Database) IsEmailWhitelisted(email string) (bool, error) {
+	if email == "" {
+		return false, nil
+	}
+	
+	query := `SELECT COUNT(*) FROM email_whitelist WHERE email = ?`
+	var count int
+	err := d.db.QueryRow(query, email).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	
+	return count > 0, nil
 }

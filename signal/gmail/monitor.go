@@ -1,10 +1,12 @@
 package gmail
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,8 +15,18 @@ import (
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
+	"github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
+
+func init() {
+	// 【新增】注册中文编码处理器，解决 "unhandled charset gb2312" 问题
+	// gb2312, gbk 统一使用 gb18030 编码器处理
+	charset.RegisterEncoding("gb2312", simplifiedchinese.GB18030)
+	charset.RegisterEncoding("gbk", simplifiedchinese.GB18030)
+	charset.RegisterEncoding("gb18030", simplifiedchinese.GB18030)
+}
 
 // Monitor Gmail监听器
 type Monitor struct {
@@ -30,10 +42,11 @@ type Monitor struct {
 
 // Email 封装策略邮件的关键信息（正文 + 元数据）
 type Email struct {
-	Body    string
-	Subject string
-	From    string
-	Date    time.Time
+	MessageID string // 唯一哈希标识 (基于 From + Subject + Date)
+	Body      string
+	Subject   string
+	From      string
+	Date      time.Time
 }
 
 // NewMonitor 创建新的监听器
@@ -142,31 +155,44 @@ func (m *Monitor) CheckEmails() error {
 
 	targetUids := new(imap.SeqSet)
 	uidToEnvelope := make(map[uint32]*imap.Envelope)
+	totalTargetCount := 0
 
 	for msg := range messages {
-		subject := msg.Envelope.Subject
-		from := ""
-		if len(msg.Envelope.From) > 0 {
-			from = msg.Envelope.From[0].PersonalName
+		// 防御性检查：避免底层返回 nil 消息导致后续解引用 panic
+		if msg == nil || msg.Envelope == nil {
+			log.Printf("⚠️ Received nil message or envelope, skip this record")
+			continue
 		}
 
-		// 🔍 核心快速过滤逻辑：标题包含 "Web3团队发布"
-		// 只要标题包含关键词，我们就认为它是目标邮件，准备下载正文
-		if strings.Contains(subject, "Web3团队发布") || strings.Contains(from, "Web3团队") {
-			// 【去重】检查是否已经处理过此标题和日期的邮件
-			fingerprint := fmt.Sprintf("%s|%s", subject, msg.Envelope.Date.Format(time.RFC3339))
-			m.mu.Lock()
-			if m.processedCache[fingerprint] {
-				m.mu.Unlock()
-				log.Printf("⏭ 跳过重复邮件: %s", subject)
-				continue
-			}
-			m.processedCache[fingerprint] = true
-			m.mu.Unlock()
+		subject := msg.Envelope.Subject
+		fromName := ""
+		fromEmail := ""
+		if len(msg.Envelope.From) > 0 {
+			fromName = msg.Envelope.From[0].PersonalName
+			fromEmail = fmt.Sprintf("%s@%s", msg.Envelope.From[0].MailboxName, msg.Envelope.From[0].HostName)
+		}
 
+		// 🔍 核心安全过滤逻辑：
+		// 1. 检查是否为白名单发送者
+		isWhitelisted := false
+		if config.GlobalDB != nil {
+			whitelisted, err := config.GlobalDB.IsEmailWhitelisted(fromEmail)
+			if err == nil && whitelisted {
+				isWhitelisted = true
+			}
+		}
+
+		// 2. 预判是否可能是策略邮件（不论是否白名单，都先初筛标题或发件人名，减少正文下载压力）
+		// 注意：正文下载后的“关键词检查”才是最终防线
+		isPotentialStrategy := strings.Contains(subject, "Web3团队发布") ||
+			strings.Contains(fromName, "Web3团队") ||
+			isWhitelisted
+
+		if isPotentialStrategy {
 			targetUids.AddNum(msg.Uid)
+			totalTargetCount++
 			uidToEnvelope[msg.Uid] = msg.Envelope
-			log.Printf("🎯 发现目标邮件(待下载): [%s] %s", from, subject)
+			log.Printf("🎯 发现目标邮件(待下载): [%s] <%s> %s (白名单: %v)", fromName, fromEmail, subject, isWhitelisted)
 		}
 	}
 
@@ -179,45 +205,80 @@ func (m *Monitor) CheckEmails() error {
 	}
 
 	// 2. 第二步：只针对目标邮件，下载正文（这里使用 UIDFetch，避免 UID/Seq 混用导致漏邮件）
+	log.Printf("📥 开始批量下载邮件正文，共 %d 封目标邮件 (区间数: %d)...", totalTargetCount, len(targetUids.Set))
 	section := &imap.BodySectionName{}
 	bodyItems := []imap.FetchItem{section.FetchItem(), imap.FetchUid}
-	bodyMessages := make(chan *imap.Message, 10)
+	// 增加缓冲大小，防止 fetch 阻塞
+	bodyMessages := make(chan *imap.Message, totalTargetCount+10)
 	bodyDone := make(chan error, 1)
 	go func() {
 		bodyDone <- c.UidFetch(targetUids, bodyItems, bodyMessages)
 	}()
 
+	processedCount := 0
 	for msg := range bodyMessages {
+		processedCount++
 		envelope := uidToEnvelope[msg.Uid]
 		if envelope == nil {
 			continue
 		}
+		if msg == nil {
+			log.Printf("⚠️ Received nil body message, skip [index=%d]", processedCount)
+			continue
+		}
+
+		// 【去重】这里才真正标记“已处理”，确保只有在成功解析正文并投递到通道后，
+		// 才会被视为已消费。否则如果在下载/解析阶段出错，就会导致邮件永久丢失。
+		// 这里才检查是否已处理过
+		fromEmail := ""
+		if len(envelope.From) > 0 {
+			fromEmail = fmt.Sprintf("%s@%s", envelope.From[0].MailboxName, envelope.From[0].HostName)
+		}
+		// 生成基于 (发件人 + 标题 + 时间) 的唯一指纹，用于持久化去重
+		fingerprintSource := fmt.Sprintf("%s|%s|%s", fromEmail, envelope.Subject, envelope.Date.Format(time.RFC3339))
+		messageID := fmt.Sprintf("%x", sha256.Sum256([]byte(fingerprintSource)))
+
+		m.mu.Lock()
+		if m.processedCache[messageID] {
+			m.mu.Unlock()
+			log.Printf("⏭ 跳过重复邮件 [%d/%d]: %s (接收时间: %s, ID: %s)",
+				processedCount, totalTargetCount, envelope.Subject, envelope.Date.Format(time.RFC3339), messageID)
+			continue
+		}
+		m.mu.Unlock()
 
 		// 解析正文
+		log.Printf("📥 [%d/%d] 正在下载/解析邮件正文... [UID: %d] %s", processedCount, totalTargetCount, msg.Uid, envelope.Subject)
 		r := msg.GetBody(section)
 		if r == nil {
+			log.Printf("⚠️ 获取邮件 Body 失败: [UID: %d] %s", msg.Uid, envelope.Subject)
 			continue
 		}
 
 		mr, err := mail.CreateReader(r)
 		if err != nil {
-			log.Printf("解析邮件结构失败: %v", err)
+			log.Printf("❌ 解析邮件结构失败: [UID: %d] %s, err: %v", msg.Uid, envelope.Subject, err)
 			continue
 		}
 
 		body := ""
+		partCount := 0
 		for {
 			p, err := mr.NextPart()
 			if err == io.EOF {
+				log.Printf("🏁 邮件 Part 读取完毕 [UID: %d] %s, 共 %d 个 Part", msg.Uid, envelope.Subject, partCount)
 				break
 			} else if err != nil {
+				log.Printf("⚠️ 读取邮件 Part 失败: [UID: %d] %s, err: %v", msg.Uid, envelope.Subject, err)
 				break
 			}
+			partCount++
 
-			switch p.Header.(type) {
+			switch h := p.Header.(type) {
 			case *mail.InlineHeader:
 				b, _ := ioutil.ReadAll(p.Body)
-				contentType := p.Header.Get("Content-Type")
+				contentType := h.Get("Content-Type")
+				log.Printf("🔍 发现邮件 Part: %s (长度: %d)", contentType, len(b))
 				if strings.Contains(contentType, "text/plain") {
 					body = string(b)
 				} else if strings.Contains(contentType, "text/html") && body == "" {
@@ -227,12 +288,70 @@ func (m *Monitor) CheckEmails() error {
 		}
 
 		if body != "" {
+			// 🔒 最终安全校验：检查关键字或密钥
+			fromEmail := ""
+			if len(envelope.From) > 0 {
+				fromEmail = fmt.Sprintf("%s@%s", envelope.From[0].MailboxName, envelope.From[0].HostName)
+			}
+
+			isWhitelisted := false
+			if config.GlobalDB != nil {
+				whitelisted, _ := config.GlobalDB.IsEmailWhitelisted(fromEmail)
+				isWhitelisted = whitelisted
+			}
+
+			// 1. 核心语境词 (必须包含其一，证明是策略类邮件，而非普通沟通)
+			hasContextKeywords := strings.Contains(body, "策略") ||
+				strings.Contains(body, "信号") ||
+				strings.Contains(body, "分析报告") ||
+				strings.Contains(body, "Web3团队")
+
+			// 2. 交易指令词 (必须包含具体操作点位，防止只有方向没有点位的闲聊)
+			hasActionKeywords := strings.Contains(body, "入场") ||
+				strings.Contains(body, "补仓") ||
+				strings.Contains(body, "止盈") ||
+				strings.Contains(body, "止损")
+
+			secretHash := os.Getenv("STRATEGY_SECRET_HASH")
+			hasSecret := secretHash != "" && strings.Contains(body, secretHash)
+
+			isValid := false
+			// 规则 A: 白名单发件人 + 必须有语境 + 必须有交易指令
+			if isWhitelisted && hasContextKeywords && hasActionKeywords {
+				isValid = true
+			} else if hasSecret && hasActionKeywords {
+				// 规则 B: 包含密钥 + 必须有交易指令 (语境词可由密钥替代)
+				isValid = true
+				log.Printf("🔑 发现有效密钥策略邮件: %s", envelope.Subject)
+			}
+
+			if !isValid {
+				log.Printf("🛡️ 拦截无效或未经授权的策略邮件: %s (白名单: %v, 语境: %v, 指令: %v)",
+					envelope.Subject, isWhitelisted, hasContextKeywords, hasActionKeywords)
+				// 即使无效也标记为已处理，防止下一轮反复扫描无效邮件
+				m.mu.Lock()
+				m.processedCache[messageID] = true
+				m.mu.Unlock()
+				continue
+			}
+
+			log.Printf("✅ 成功提取正文 (长度: %d) -> 推送到解析队列: %s", len(body), envelope.Subject)
+			// 只有在真正拿到正文并成功构造 Email 之后，才标记为已处理
+			m.mu.Lock()
+			m.processedCache[messageID] = true
+			m.mu.Unlock()
+
 			// 发送到通道
+			fromName := ""
+			if len(envelope.From) > 0 {
+				fromName = envelope.From[0].PersonalName
+			}
 			email := &Email{
-				Body:    body,
-				Subject: envelope.Subject,
-				From:    envelope.From[0].PersonalName,
-				Date:    envelope.Date,
+				MessageID: messageID,
+				Body:      body,
+				Subject:   envelope.Subject,
+				From:      fromName,
+				Date:      envelope.Date, // 使用邮件原始接收时间
 			}
 			m.SignalChan <- email
 
@@ -244,13 +363,17 @@ func (m *Monitor) CheckEmails() error {
 			if err := c.UidStore(uSet, item, flags, nil); err != nil {
 				log.Printf("标记已读失败: %v", err)
 			}
+		} else {
+			log.Printf("❌ 邮件正文提取为空 [UID: %d] %s", msg.Uid, envelope.Subject)
 		}
 	}
 
 	if err := <-bodyDone; err != nil {
+		log.Printf("❌ UidFetch 最终返回错误: %v", err)
 		return err
 	}
 
+	log.Printf("✨ 本轮 Gmail 扫描完成")
 	// 本轮扫描完成，记录“最后检查时间”，下一轮只处理之后的新邮件
 	m.lastCheck = time.Now()
 	return nil

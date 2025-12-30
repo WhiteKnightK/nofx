@@ -260,6 +260,14 @@ func (d *Database) createMySQLTables() error {
 			INDEX idx_symbol_time (symbol, received_at DESC),
 			INDEX idx_received_at (received_at DESC)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+		// 邮件发送者白名单
+		`CREATE TABLE IF NOT EXISTS email_whitelist (
+			id INT AUTO_INCREMENT PRIMARY KEY,
+			email VARCHAR(255) UNIQUE NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			INDEX idx_email (email)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 	}
 
 	for _, query := range queries {
@@ -283,7 +291,7 @@ func (d *Database) migrateTraderStrategyStatus() error {
 		  AND TABLE_NAME = 'trader_strategy_status' 
 		  AND COLUMN_NAME = 'id'
 	`).Scan(&count)
-	
+
 	if err != nil {
 		return err
 	}
@@ -297,7 +305,7 @@ func (d *Database) migrateTraderStrategyStatus() error {
 
 	// 2. 将旧表重命名为备份表
 	d.db.Exec("DROP TABLE IF EXISTS trader_strategy_status_old")
-	
+
 	_, err = d.db.Exec("RENAME TABLE trader_strategy_status TO trader_strategy_status_old")
 	if err != nil {
 		return fmt.Errorf("重命名旧表失败: %w", err)
@@ -316,7 +324,7 @@ func (d *Database) migrateTraderStrategyStatus() error {
 			FOREIGN KEY (trader_id) REFERENCES traders(id) ON DELETE CASCADE,
 			UNIQUE KEY uniq_trader_strategy (trader_id, strategy_id)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
-	
+
 	_, err = d.db.Exec(createTableQuery)
 	if err != nil {
 		// 尝试恢复

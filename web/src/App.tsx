@@ -1129,7 +1129,8 @@ function TraderDetailsPage({
       {/* Trader Execution Status - Multi-Strategy List */}
       <div className="mb-6 animate-slide-in" style={{ animationDelay: '0.25s' }}>
         {(() => {
-          const activeRenderList = (strategiesData || []).filter((item: any) => {
+          // 1. 获取基础列表并过滤掉已关闭的
+          const rawList = (strategiesData || []).filter((item: any) => {
             const status = strategyStatuses?.find((s: any) => s.strategy_id === item.strategy.signal_id);
             const fallbackStatus = !status
               ? strategyStatuses?.find((s: any) => s.strategy_id === '' && !s.strategy_id)
@@ -1137,6 +1138,35 @@ function TraderDetailsPage({
             const finalStatus = status || fallbackStatus;
             return !(finalStatus && finalStatus.status === 'CLOSED');
           });
+
+          // 2. 实现资产交替排序逻辑
+          const groups: Record<string, any[]> = {}
+          rawList.forEach(item => {
+            const sym = item.strategy.symbol
+            if (!groups[sym]) groups[sym] = []
+            groups[sym].push(item)
+          })
+
+          // 组内排序 (按 updated_at 倒序)
+          Object.keys(groups).forEach(sym => {
+            groups[sym].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+          })
+
+          // 交替采样
+          const sortedSymbols = Object.keys(groups).sort()
+          const activeRenderList: any[] = []
+          let hasMore = true
+          let round = 0
+          while (hasMore) {
+            hasMore = false
+            for (const sym of sortedSymbols) {
+              if (groups[sym][round]) {
+                activeRenderList.push(groups[sym][round])
+                hasMore = true
+              }
+            }
+            round++
+          }
 
           return (
             <>

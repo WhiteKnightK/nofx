@@ -96,6 +96,16 @@ func (p *Parser) Parse(emailContent string) (*SignalDecision, error) {
 		return nil, fmt.Errorf("解析结果缺失关键信息(Symbol/Direction)")
 	}
 
+	// 🛑 深度验证：防止AI产生幻觉或解析了非策略文本
+	if decision.Entry.PriceTarget <= 0 {
+		return nil, fmt.Errorf("解析结果无效: 入场价格为 0 或未识别")
+	}
+	// 确保至少有一个有效的止盈或止损，或者是现价单
+	hasExit := (decision.StopLoss.Price > 0) || (len(decision.TakeProfits) > 0 && decision.TakeProfits[0].Price > 0)
+	if !hasExit {
+		return nil, fmt.Errorf("解析结果无效: 缺失止盈或止损设置")
+	}
+
 	// 保存原始邮件内容用于前端展示
 	decision.RawContent = emailContent
 

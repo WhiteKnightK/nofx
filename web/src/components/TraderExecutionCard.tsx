@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Activity, ArrowDown, ArrowUp, Layers, AlertTriangle, FileText } from 'lucide-react';
+
+import { Activity, ArrowDown, ArrowUp, Layers} from 'lucide-react';
 import {
     ResponsiveContainer,
     ComposedChart,
@@ -10,7 +10,7 @@ import {
     Line,
     ReferenceLine,
 } from 'recharts';
-import { ModernModal } from './Toast';
+
 import type { Position } from '../types';
 
 // 智能内容渲染组件 (适配 Markdown, HTML 和 纯文本邮件)
@@ -119,7 +119,7 @@ interface TraderExecutionCardProps {
 }
 
 // 【功能】策略关键价位可视化图表
-const StrategyLevelsChart = ({
+ ({
     slPrice,
     entryPrice,
     tpPrices,
@@ -220,7 +220,7 @@ const StrategyLevelsChart = ({
 };
 
 export function TraderExecutionCard({ strategy, status: traderStatus, currentPrice, updatedAt, position }: TraderExecutionCardProps) {
-  const [showDetails, setShowDetails] = useState(false);
+  
   
   if (!strategy) return null;
 
@@ -293,6 +293,13 @@ export function TraderExecutionCard({ strategy, status: traderStatus, currentPri
   const theoreticalEntryPos = getPosition(entryPrice);
   const actualEntryPos = positionEntryPrice > 0 ? getPosition(positionEntryPrice) : -1;
 
+  // 补仓点位在进度条上的位置
+  const addMarkers = (strategy.adds || []).map((add: any, idx: number) => ({
+    label: `ADD${idx + 1}`,
+    price: add.price,
+    pos: getPosition(add.price),
+  }));
+
   // 多级 TP 在进度条上的位置
   const tpMarkers = tpList.length
     ? tpList.map((price: number, idx: number) => ({
@@ -303,6 +310,17 @@ export function TraderExecutionCard({ strategy, status: traderStatus, currentPri
     : [{ label: 'TP1', price: tp1Price, pos: getPosition(tp1Price) }];
 
   // 状态颜色映射
+  const getStatusLabel = (status: string) => {
+      switch (status) {
+          case 'WAITING': return '等待中';
+          case 'ENTRY': return '已入场';
+          case 'ADD_1': return '一次补仓';
+          case 'ADD_2': return '二次补仓';
+          case 'CLOSED': return '已关闭';
+          default: return status || '等待中';
+      }
+  };
+
   const getStatusColor = (status: string) => {
       switch (status) {
           case 'WAITING': return 'text-yellow-500 bg-yellow-500/10 border-yellow-500/30';
@@ -310,11 +328,16 @@ export function TraderExecutionCard({ strategy, status: traderStatus, currentPri
           case 'ADD_1': 
           case 'ADD_2': return 'text-purple-500 bg-purple-500/10 border-purple-500/30';
           case 'CLOSED': return 'text-gray-400 bg-gray-500/10 border-gray-500/30';
-          default: return 'text-gray-400';
+          default: return 'text-yellow-500 bg-yellow-500/10 border-yellow-500/30';
       }
   };
 
   const directionLabel = isLong ? '做多' : '做空'
+
+  // 处理 ID 显示：如果是超长哈希，只显示前 8 位
+  const displayId = strategy.signal_id.length > 16 
+    ? strategy.signal_id.substring(0, 8).toUpperCase()
+    : (strategy.signal_id.split('_').pop()?.toUpperCase() || 'SIGNAL');
 
   return (
     <>
@@ -329,7 +352,7 @@ export function TraderExecutionCard({ strategy, status: traderStatus, currentPri
               <div>
                   <div className="flex items-center gap-2 mb-2">
                       <span className="px-3 py-1 bg-[#2B3139] text-[#C4CCD6] text-xs rounded border border-[#474D57] font-mono">
-                          {strategy.signal_id.split('_').pop() || 'SIGNAL'}
+                          {displayId}
                       </span>
                       <span className="text-sm text-[#F0B90B] flex items-center gap-1">
                           <Activity size={10} /> 
@@ -348,7 +371,7 @@ export function TraderExecutionCard({ strategy, status: traderStatus, currentPri
                           <span className="text-xs opacity-70 ml-1">({strategy.direction})</span>
                       </div>
                       <div className={`px-3 py-1 rounded text-sm font-bold border ${getStatusColor(executionStatus)}`}>
-                          {executionStatus}
+                          {getStatusLabel(executionStatus)}
                       </div>
                   </div>
               </div>
@@ -426,6 +449,23 @@ export function TraderExecutionCard({ strategy, status: traderStatus, currentPri
                       </div>
                       </>
                   )}
+
+                  {/* 补仓 (ADD) 标记 */}
+                  {addMarkers.map((m: any) => (
+                    <div key={m.label}>
+                      <div
+                        className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-purple-500 rounded-full border border-[#1E2329] z-10"
+                        style={{ left: `${m.pos}%` }}
+                      ></div>
+                      <div
+                        className="absolute -top-9 -translate-x-1/2 flex flex-col items-center"
+                        style={{ left: `${m.pos}%` }}
+                      >
+                        <span className="text-[10px] text-[#848E9C] font-mono">{m.price.toFixed(2)}</span>
+                        <span className="text-[10px] text-purple-400 font-bold">补仓</span>
+                      </div>
+                    </div>
+                  ))}
 
                   {/* 多级 TP 标记 */}
                   {tpMarkers.map((m: any) => (
@@ -505,55 +545,11 @@ export function TraderExecutionCard({ strategy, status: traderStatus, currentPri
               </div>
           </div>
 
-          {/* 右侧：操作区 */}
-          <div className="flex-shrink-0 md:w-32 flex flex-col justify-end border-l border-[#2B3139] pl-6 ml-2">
-              <button 
-                  onClick={() => setShowDetails(true)}
-                  className="w-full py-2 bg-[#2B3139] hover:bg-[#363C45] text-[#EAECEF] text-xs font-medium rounded transition-colors flex items-center justify-center gap-1 group"
-              >
-                  <FileText size={12} />
-                  策略详情
-              </button>
+          {/* 右侧：操作区 - 已隐藏详情查看，仅保留布局平衡 */}
+          <div className="flex-shrink-0 md:w-4 flex flex-col justify-end border-l border-[#2B3139] ml-2">
           </div>
        </div>
     </div>
-
-    {/* 详情弹窗 */}
-    <ModernModal
-        isOpen={showDetails}
-        onClose={() => setShowDetails(false)}
-        title="📝 完整策略分析报告"
-        size="lg"
-    >
-        <div className="space-y-6">
-            <div className="bg-[#2B3139]/50 p-4 rounded-lg border border-[#474D57]/50">
-                <div className="text-xs text-[#848E9C] uppercase tracking-wider mb-2 font-bold">Strategy Summary</div>
-                <p className="text-[#EAECEF] text-sm leading-relaxed">{strategy.raw_text_summary}</p>
-            </div>
-            <div>
-                <div className="text-xs text-[#848E9C] uppercase tracking-wider mb-4 font-bold border-b border-[#2B3139] pb-2">Full Analysis</div>
-                {strategy.raw_content ? (
-                    <div className="space-y-4">
-                        <StrategyLevelsChart
-                            slPrice={strategy.stop_loss?.price || 0}
-                            entryPrice={strategy.entry?.price_target || 0}
-                            tpPrices={(strategy.take_profits || []).map((tp: any) => tp.price)}
-                            addPrices={(strategy.adds || []).map((a: any) => a.price)}
-                            currentPrice={current_price || 0}
-                        />
-                        <div className="max-h-[60vh] overflow-y-auto">
-                            <SmartContentRenderer content={strategy.raw_content} />
-                        </div>
-                    </div>
-                ) : (
-                    <div className="text-center py-10 text-gray-500">
-                        <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                        <p>暂无完整报告内容</p>
-                    </div>
-                )}
-            </div>
-        </div>
-    </ModernModal>
     </>
   );
 }

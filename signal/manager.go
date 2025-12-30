@@ -117,6 +117,11 @@ func (sm *StrategyManager) loop() {
 					return
 				}
 
+				// 使用邮件指纹作为 SignalID，实现持久化去重
+				if e.MessageID != "" {
+					decision.SignalID = e.MessageID
+				}
+
 				// 更新策略（使用邮件原始时间作为策略时间轴的基准）
 				sm.UpdateStrategy(decision, e.Date)
 			}(email)
@@ -141,14 +146,9 @@ func (sm *StrategyManager) UpdateStrategy(newStrat *SignalDecision, receivedAt t
 	}
 
 	if newStrat.SignalID == "" {
-		// 【注意】这里必须保证每一封“新策略邮件”拿到一个全新的 ID
-		// 原来为了“稳定 ID”改成基于 symbol+direction+entry 的固定值，
-		// 会导致：老策略在数据库里已经是 CLOSED，新邮件如果价格相同就复用同一个 ID，
-		// 结果被整个执行链路当成“已经结束的旧策略”，AI 完全不会再跟新策略跑。
-		//
-		// 所以这里恢复为“带时间戳的唯一 ID”，确保每一轮新策略都是一个独立生命周期。
-		newStrat.SignalID = fmt.Sprintf("anon_%s_%s_%.4f_%d",
-			newStrat.Symbol, newStrat.Direction, newStrat.Entry.PriceTarget, time.Now().UnixNano())
+		// 兜底：如果解析器没有提供 ID（理论上现在不会发生），则生成一个基于内容的 ID
+		newStrat.SignalID = fmt.Sprintf("sig_%s_%s_%d",
+			newStrat.Symbol, newStrat.Direction, receivedAt.Unix())
 	}
 
 	// 关键：内存中的 active 策略池按「交易对」维度去重

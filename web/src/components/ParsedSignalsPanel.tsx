@@ -1,4 +1,6 @@
+import { useState, useMemo } from 'react'
 import useSWR from 'swr'
+import { api } from '../lib/api'
 
 interface ParsedSignalsPanelProps {
   strategyStatuses?: any[]
@@ -13,6 +15,71 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
     api.getParsedSignals,
     { refreshInterval: 10000 }
   )
+
+  // 筛选和排序状态
+  const [filterSymbol, setFilterSymbol] = useState('')
+  const [sortBy, setSortBy] = useState<'alternate' | 'time' | 'symbol' | 'progress' | 'price'>('alternate')
+
+  // 处理数据过滤和排序
+  const processedSignals = useMemo(() => {
+    if (!signals || !Array.isArray(signals)) return []
+
+    // 1. 基础过滤
+    let list = [...signals]
+    if (filterSymbol) {
+      list = list.filter(s => s.symbol.toLowerCase().includes(filterSymbol.toLowerCase()))
+    }
+
+    // 2. 根据不同规则排序
+    if (sortBy === 'time') {
+      return list.sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime())
+    }
+    
+    if (sortBy === 'symbol') {
+      return list.sort((a, b) => a.symbol.localeCompare(b.symbol))
+    }
+
+    if (sortBy === 'price') {
+      return list.sort((a, b) => {
+        const priceA = JSON.parse(a.content_json || '{}').entry?.price_target || 0
+        const priceB = JSON.parse(b.content_json || '{}').entry?.price_target || 0
+        return priceB - priceA
+      })
+    }
+
+    // 默认：交替排序逻辑 (Alternate)
+    // 逻辑：按交易对分组，组内按时间倒序，然后交叉取值
+    const groups: Record<string, any[]> = {}
+    list.forEach(s => {
+      if (!groups[s.symbol]) groups[s.symbol] = []
+      groups[s.symbol].push(s)
+    })
+
+    // 各组内部按时间倒序
+    Object.keys(groups).forEach(sym => {
+      groups[sym].sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime())
+    })
+
+    // 获取所有交易对名称并按字母序排列 (BTC, ETH...)
+    const sortedSymbols = Object.keys(groups).sort()
+    
+    const interleaved: any[] = []
+    let hasMore = true
+    let round = 0
+    
+    while (hasMore) {
+      hasMore = false
+      for (const sym of sortedSymbols) {
+        if (groups[sym][round]) {
+          interleaved.push(groups[sym][round])
+          hasMore = true
+        }
+      }
+      round++
+    }
+    
+    return interleaved
+  }, [signals, filterSymbol, sortBy])
 
   if (error) {
     return (
@@ -32,7 +99,7 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
 
   return (
     <div className="rounded-2xl border border-[#2B3139] overflow-hidden shadow-2xl" style={{ backgroundColor: '#1E2329' }}>
-      <div className="flex items-center justify-between p-5 border-b border-[#2B3139] bg-white/5">
+      <div className="flex flex-col md:flex-row md:items-center justify-between p-5 border-b border-[#2B3139] bg-white/5 gap-4">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -44,15 +111,40 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
             <p className="text-[10px] text-[#848E9C] uppercase tracking-wider font-semibold">SIGNAL REPOSITORY (LATEST 100)</p>
           </div>
         </div>
-        <button 
-          onClick={() => mutate()}
-          className="px-4 py-2 rounded-xl text-xs font-bold bg-[#2B3139] text-[#EAECEF] hover:bg-white/10 active:scale-95 transition-all flex items-center gap-2 border border-white/5"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
-          刷新
-        </button>
+
+        {/* 筛选和工具栏 */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative">
+            <input 
+              type="text"
+              placeholder="搜索交易对..."
+              value={filterSymbol}
+              onChange={(e) => setFilterSymbol(e.target.value)}
+              className="bg-[#0B0E11] border border-[#2B3139] rounded-xl px-4 py-2 text-xs text-[#EAECEF] w-32 focus:border-blue-500 focus:outline-none transition-all"
+            />
+          </div>
+
+          <select 
+            value={sortBy}
+            onChange={(e: any) => setSortBy(e.target.value)}
+            className="bg-[#0B0E11] border border-[#2B3139] rounded-xl px-3 py-2 text-xs text-[#EAECEF] focus:outline-none focus:border-blue-500 transition-all cursor-pointer"
+          >
+            <option value="alternate">交替排序 (默认)</option>
+            <option value="time">按收到时间</option>
+            <option value="symbol">按资产名称</option>
+            <option value="price">按目标价格</option>
+          </select>
+
+          <button 
+            onClick={() => mutate()}
+            className="px-4 py-2 rounded-xl text-xs font-bold bg-[#2B3139] text-[#EAECEF] hover:bg-white/10 active:scale-95 transition-all flex items-center gap-2 border border-white/5"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            刷新
+          </button>
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -67,7 +159,7 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
             </tr>
           </thead>
           <tbody className="divide-y divide-[#2B3139]">
-            {(!signals || signals.length === 0) ? (
+            {(!processedSignals || processedSignals.length === 0) ? (
               <tr>
                 <td colSpan={5} className="px-6 py-20 text-center text-[#5E6673]">
                   <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center mx-auto mb-4 opacity-20">
@@ -75,20 +167,22 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
                     </svg>
                   </div>
-                  <p className="text-sm font-medium">暂无已解析的信号记录</p>
+                  <p className="text-sm font-medium">暂无匹配的信号记录</p>
                 </td>
               </tr>
             ) : (
               (() => {
-                // 先为每个交易对找出「最新」的一条信号（按 received_at 倒序）
+                // 先为每个交易对找出「最新」的一条信号（基于全部信号中的时间顺序）
                 const latestBySymbol: Record<string, string> = {}
-                ;(signals as any[]).forEach((sig: any) => {
-                  if (!latestBySymbol[sig.symbol]) {
-                    latestBySymbol[sig.symbol] = sig.signal_id
-                  }
-                })
+                if (signals && Array.isArray(signals)) {
+                  [...signals].sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime()).forEach((sig: any) => {
+                    if (!latestBySymbol[sig.symbol]) {
+                      latestBySymbol[sig.symbol] = sig.signal_id
+                    }
+                  })
+                }
 
-                return (signals as any[]).map((sig: any) => {
+                return (processedSignals as any[]).map((sig: any) => {
                   const isLong = sig.direction === 'LONG'
                   const content = JSON.parse(sig.content_json || '{}')
                   const rawStatus = strategyStatuses?.find(
@@ -132,39 +226,54 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
                       badgeClass =
                         'text-yellow-500 bg-yellow-500/5 border-yellow-500/20'
                       dotClass = 'bg-yellow-500'
-                      badgeText = 'WAITING'
+                      badgeText = '等待中'
                       break
                     case 'RUNNING':
                       badgeClass =
                         'text-emerald-500 bg-emerald-500/5 border-emerald-500/20 shadow-lg shadow-emerald-500/5'
                       dotClass = 'bg-emerald-500 animate-pulse'
-                      badgeText = rawStatus?.status || 'RUNNING'
+                      // 对运行中的状态进行中文映射
+                      const statusMap: Record<string, string> = {
+                        'ENTRY': '已入场',
+                        'ADD_1': '一次补仓',
+                        'ADD_2': '二次补仓',
+                        'RUNNING': '运行中'
+                      }
+                      badgeText = statusMap[rawStatus?.status || ''] || rawStatus?.status || '运行中'
                       break
                     case 'CLOSED':
                       badgeClass =
                         'text-gray-500 bg-gray-500/5 border-gray-500/20'
                       dotClass = 'bg-gray-500'
-                      badgeText = 'CLOSED'
+                      badgeText = '已关闭'
                       break
                     case 'EXPIRED':
                       badgeClass =
                         'text-orange-400 bg-orange-500/5 border-orange-500/30'
                       dotClass = 'bg-orange-400'
-                      badgeText = 'EXPIRED'
+                      badgeText = '已过期'
                       break
                     case 'NONE':
                     default:
+                      badgeClass = 'text-blue-400 bg-blue-500/5 border-blue-500/20'
+                      dotClass = 'bg-blue-400'
+                      badgeText = '等待入场'
                       break
                   }
+
+                  // 处理 ID 显示：如果是超长哈希，只显示前 8 位
+                  const displayId = sig.signal_id.length > 16 
+                    ? sig.signal_id.substring(0, 8).toUpperCase()
+                    : (sig.signal_id.split('_').pop()?.toUpperCase() || 'SIGNAL');
 
                   return (
                   <tr key={sig.signal_id} className="group hover:bg-white/[0.02] transition-colors">
                     <td className="px-6 py-5">
                       <div className="font-black text-[#EAECEF] text-xs tracking-tighter">
-                        {sig.signal_id.split('_').pop()?.toUpperCase() || 'SIGNAL'}
+                        {displayId}
                       </div>
                       <div className="text-[9px] text-[#5E6673] font-mono mt-1 opacity-40 group-hover:opacity-100 transition-opacity">
-                        {sig.signal_id}
+                        {sig.signal_id.substring(0, 16)}...
                       </div>
                     </td>
                     <td className="px-6 py-5">
@@ -188,15 +297,14 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
                       </div>
                     </td>
                     <td className="px-6 py-5">
-                      {displayKind !== 'NONE' ? (
-                        <div className="flex flex-col gap-1.5">
-                          <div
-                            className={`text-[10px] px-2 py-0.5 rounded-lg inline-flex items-center gap-1.5 font-black border uppercase ${badgeClass}`}
-                          >
-                            <span className={`w-1 h-1 rounded-full ${dotClass}`}></span>
-                            {badgeText}
-                          </div>
-                          {/* 只有真正 CLOSED 的策略才展示已实现盈亏 */}
+                      <div className="flex flex-col gap-1.5">
+                        <div
+                          className={`text-[10px] px-2 py-0.5 rounded-lg inline-flex items-center gap-1.5 font-black border uppercase ${badgeClass}`}
+                        >
+                          <span className={`w-1 h-1 rounded-full ${dotClass}`}></span>
+                          {badgeText}
+                        </div>
+                        {/* 只有真正 CLOSED 的策略才展示已实现盈亏 */}
                           {displayKind === 'CLOSED' && realizedPnL !== 0 && (
                             <div
                               className={`text-[10px] font-black tracking-tighter ${
@@ -208,11 +316,6 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
                             </div>
                           )}
                         </div>
-                      ) : (
-                        <span className="text-[10px] text-[#5E6673] font-bold italic opacity-40">
-                          NOT STARTED
-                        </span>
-                      )}
                     </td>
                     <td className="px-6 py-5 text-right">
                       <div className="text-xs text-[#EAECEF] font-black tracking-tight">

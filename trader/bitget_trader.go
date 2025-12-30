@@ -131,16 +131,6 @@ func (t *BitgetTrader) request(method, endpoint string, params map[string]string
 	// 生成签名
 	sign := t.sign(timestamp, method, requestPath, bodyStr)
 
-	// 调试日志：打印签名信息
-	log.Printf("🔐 Bitget签名调试:")
-	log.Printf("  - API Key前4位: %s...", t.apiKey[:min(4, len(t.apiKey))])
-	log.Printf("  - Timestamp: %s", timestamp)
-	log.Printf("  - Method: %s", method)
-	log.Printf("  - RequestPath: %s", requestPath)
-	log.Printf("  - Body: %s", bodyStr)
-	log.Printf("  - Signature: %s", sign[:min(20, len(sign))]+"...")
-	log.Printf("  - Passphrase长度: %d", len(t.passphrase))
-
 	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("ACCESS-KEY", t.apiKey)
