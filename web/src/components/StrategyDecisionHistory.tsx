@@ -2,14 +2,34 @@ import { useState } from 'react';
 import useSWR from 'swr';
 import { api } from '../lib/api';
 import { StrategyDecisionHistory as HistoryType } from '../types';
-import { Clock, AlertCircle, CheckCircle, XCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import { Clock, AlertCircle, CheckCircle, XCircle, ChevronDown, ChevronUp, Filter } from 'lucide-react';
 
 interface StrategyDecisionHistoryProps {
     traderId: string;
 }
 
+// 动作类型分类
+const ACTION_CATEGORIES = {
+    all: '全部',
+    open: '开仓类',
+    close: '平仓类',
+    sltp: '止盈止损',
+    wait: '观望'
+};
+
+// 判断动作属于哪个分类
+const getActionCategory = (action: string): string => {
+    const upperAction = action.toUpperCase();
+    if (upperAction.includes('OPEN') || upperAction.includes('ADD')) return 'open';
+    if (upperAction.includes('CLOSE') || upperAction.includes('PARTIAL')) return 'close';
+    if (upperAction.includes('STOP') || upperAction.includes('TP') || upperAction.includes('SL') || upperAction.includes('PROFIT') || upperAction.includes('LOSS')) return 'sltp';
+    if (upperAction === 'WAIT' || upperAction === 'HOLD') return 'wait';
+    return 'all';
+};
+
 export function StrategyDecisionHistory({ traderId }: StrategyDecisionHistoryProps) {
     const [limit] = useState(50);
+    const [actionFilter, setActionFilter] = useState<string>('all');
     const { data, error } = useSWR(
         traderId ? `strategy-decisions-${traderId}-${limit}` : null,
         () => api.getStrategyDecisions(traderId, 'latest', limit),
@@ -21,9 +41,14 @@ export function StrategyDecisionHistory({ traderId }: StrategyDecisionHistoryPro
     if (error) return <div className="text-red-500 text-sm p-4">加载决策历史失败</div>;
     if (!data) return <div className="text-gray-500 text-sm p-4">加载中...</div>;
 
-    const decisions: HistoryType[] = data.decisions || [];
+    const allDecisions: HistoryType[] = data.decisions || [];
 
-    if (decisions.length === 0) {
+    // 根据筛选条件过滤
+    const decisions = actionFilter === 'all'
+        ? allDecisions
+        : allDecisions.filter(d => getActionCategory(d.action) === actionFilter);
+
+    if (allDecisions.length === 0) {
         return (
             <div className="bg-[#1E2329] rounded-xl border border-[#2B3139] p-6 text-center">
                 <div className="text-gray-500 text-sm">暂无策略决策记录</div>
@@ -35,6 +60,7 @@ export function StrategyDecisionHistory({ traderId }: StrategyDecisionHistoryPro
         if (action.includes('LONG')) return 'text-green-500 bg-green-500/10 border-green-500/20';
         if (action.includes('SHORT')) return 'text-red-500 bg-red-500/10 border-red-500/20';
         if (action === 'WAIT') return 'text-yellow-500 bg-yellow-500/10 border-yellow-500/20';
+        if (action.includes('STOP') || action.includes('TP') || action.includes('SL')) return 'text-blue-500 bg-blue-500/10 border-blue-500/20';
         return 'text-gray-400 bg-gray-500/10 border-gray-500/20';
     };
 
@@ -55,13 +81,31 @@ export function StrategyDecisionHistory({ traderId }: StrategyDecisionHistoryPro
                     <Clock size={18} className="text-[#F0B90B]" />
                     策略执行历史
                 </h3>
-                <span className="text-xs text-[#848E9C]">最近 {decisions.length} 条记录</span>
+                <div className="flex items-center gap-3">
+                    {/* 筛选下拉框 */}
+                    <div className="flex items-center gap-2">
+                        <Filter size={14} className="text-[#848E9C]" />
+                        <select
+                            value={actionFilter}
+                            onChange={(e) => setActionFilter(e.target.value)}
+                            className="bg-[#0B0E11] text-[#EAECEF] text-xs px-2 py-1 rounded border border-[#2B3139] focus:outline-none focus:border-[#F0B90B]"
+                        >
+                            {Object.entries(ACTION_CATEGORIES).map(([key, label]) => (
+                                <option key={key} value={key}>{label}</option>
+                            ))}
+                        </select>
+                    </div>
+                    <span className="text-xs text-[#848E9C]">
+                        显示 {decisions.length} / {allDecisions.length} 条
+                    </span>
+                </div>
             </div>
 
             <div className="divide-y divide-[#2B3139] max-h-[500px] overflow-y-auto">
+
                 {decisions.map((decision) => (
                     <div key={decision.id} className="p-4 hover:bg-[#2B3139]/50 transition-colors">
-                        <div 
+                        <div
                             className="flex justify-between items-start cursor-pointer"
                             onClick={() => setExpandedId(expandedId === decision.id ? null : decision.id)}
                         >
@@ -106,7 +150,7 @@ export function StrategyDecisionHistory({ traderId }: StrategyDecisionHistoryPro
                                         <p className="text-[#EAECEF] leading-relaxed">{decision.reason}</p>
                                     </div>
                                 </div>
-                                
+
                                 <div className="grid grid-cols-3 gap-2 text-xs text-[#848E9C]">
                                     <div className="bg-[#2B3139]/30 p-2 rounded">
                                         <span className="block mb-1">RSI (1H)</span>
@@ -131,7 +175,7 @@ export function StrategyDecisionHistory({ traderId }: StrategyDecisionHistoryPro
                                         执行错误: {decision.execution_error}
                                     </div>
                                 )}
-                                
+
                                 <div className="text-[10px] text-[#5E6673] font-mono mt-2 text-right">
                                     Strategy ID: {decision.strategy_id.split('_').pop()}
                                 </div>

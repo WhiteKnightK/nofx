@@ -4439,8 +4439,8 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 		}
 	}
 
-	// 支持三种模式：latest（最新N条）、open（所有开仓）、close（所有平仓）
-	mode := c.Query("mode") // latest | open | close
+	// 支持四种模式：latest（最新N条）、open（所有开仓）、close（所有平仓）、sltp（止盈止损）
+	mode := c.Query("mode") // latest | open | close | sltp
 	if mode == "" {
 		mode = "latest" // 默认为最新模式
 	}
@@ -4467,6 +4467,16 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 			return
 		}
 		log.Printf("✓ [决策查询] trader=%s mode=close 返回 %d 条", id, len(decisions))
+
+	case "sltp":
+		// 所有止盈止损相关决策（包含 STOP, TP, SL, PROFIT, LOSS 关键字）
+		var sltpErr error
+		decisions, sltpErr = s.database.GetAllSLTPStrategyDecisions(id)
+		if sltpErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取止盈止损决策失败: %v", sltpErr)})
+			return
+		}
+		log.Printf("✓ [决策查询] trader=%s mode=sltp 返回 %d 条", id, len(decisions))
 		
 	default: // "latest"
 		// 最新N条（默认50条）
@@ -4484,6 +4494,7 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 		}
 		log.Printf("✓ [决策查询] trader=%s mode=latest limit=%d 返回 %d 条", id, limit, len(decisions))
 	}
+
 
 	// 如果没有记录，返回空数组
 	if decisions == nil {

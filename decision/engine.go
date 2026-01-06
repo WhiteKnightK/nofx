@@ -7,6 +7,7 @@ import (
 	"nofx/market"
 	"nofx/mcp"
 	"nofx/pool"
+	"nofx/signal"
 	"regexp"
 	"strings"
 	"time"
@@ -25,6 +26,10 @@ var (
 	// 新增：XML标签提取（支持思维链中包含任何字符）
 	reReasoningTag = regexp.MustCompile(`(?s)<reasoning>(.*?)</reasoning>`)
 	reDecisionTag  = regexp.MustCompile(`(?s)<decision>(.*?)</decision>`)
+
+	// 新增：单个 Decision 对象提取（用于兼容模型只输出单对象而不是数组的情况）
+	// 仅匹配同时包含 "symbol" 和 "action" 字段的最外层对象，避免误匹配示例代码块
+	reDecisionObject = regexp.MustCompile(`(?is)\{\s*"symbol"\s*:\s*".+?"[^{}]*"action"\s*:\s*".+?"[^{}]*\}`)
 )
 
 // PositionInfo 持仓信息
@@ -45,6 +50,7 @@ type PositionInfo struct {
 
 // AccountInfo 账户信息
 type AccountInfo struct {
+	InitialBalance   float64 `json:"initial_balance"`   // 初始余额
 	TotalEquity      float64 `json:"total_equity"`      // 账户净值
 	AvailableBalance float64 `json:"available_balance"` // 可用余额
 	TotalPnL         float64 `json:"total_pnl"`         // 总盈亏
@@ -72,23 +78,24 @@ type OITopData struct {
 
 // Context 交易上下文（传递给AI的完整信息）
 type Context struct {
-	CurrentTime     string                  `json:"current_time"`
-	RuntimeMinutes  int                     `json:"runtime_minutes"`
-	CallCount       int                     `json:"call_count"`
-	Account         AccountInfo             `json:"account"`
-	Positions       []PositionInfo          `json:"positions"`
-	CandidateCoins  []CandidateCoin         `json:"candidate_coins"`
-	MarketDataMap   map[string]*market.Data `json:"-"` // 不序列化，但内部使用
-	OITopDataMap    map[string]*OITopData   `json:"-"` // OI Top数据映射
-	Performance     interface{}             `json:"-"` // 历史表现分析（logger.PerformanceAnalysis）
-	BTCETHLeverage  int                     `json:"-"` // BTC/ETH杠杆倍数（从配置读取）
-	AltcoinLeverage int                     `json:"-"` // 山寨币杠杆倍数（从配置读取）
+	CurrentTime      string                     `json:"current_time"`
+	RuntimeMinutes   int                        `json:"runtime_minutes"`
+	CallCount        int                        `json:"call_count"`
+	Account          AccountInfo                `json:"account"`
+	Positions        []PositionInfo             `json:"positions"`
+	ActiveStrategies []*signal.StrategySnapshot `json:"active_strategies"`
+	CandidateCoins   []CandidateCoin            `json:"candidate_coins"`
+	MarketDataMap    map[string]*market.Data    `json:"-"` // 不序列化，但内部使用
+	OITopDataMap     map[string]*OITopData      `json:"-"` // OI Top数据映射
+	Performance      interface{}                `json:"-"` // 历史表现分析（logger.PerformanceAnalysis）
+	BTCETHLeverage   int                        `json:"-"` // BTC/ETH杠杆倍数（从配置读取）
+	AltcoinLeverage  int                        `json:"-"` // 山寨币杠杆倍数（从配置读取）
 }
 
 // Decision AI的交易决策
 type Decision struct {
 	Symbol string `json:"symbol"`
-	Action string `json:"action"` // "open_long", "open_short", "close_long", "close_short", "update_stop_loss", "update_take_profit", "partial_close", "hold", "wait"
+	Action string `json:"action"` // "open_long", "open_short", "close_long", "close_short", "partial_close", "set_tp_order", "set_sl_order", "update_stop_loss", "update_take_profit", "hold", "wait"
 
 	// 开仓参数
 	Leverage        int     `json:"leverage,omitempty"`
@@ -96,16 +103,22 @@ type Decision struct {
 	StopLoss        float64 `json:"stop_loss,omitempty"`
 	TakeProfit      float64 `json:"take_profit,omitempty"`
 
-	// 调整参数（新增）
+	// 调整参数
 	NewStopLoss     float64 `json:"new_stop_loss,omitempty"`    // 用于 update_stop_loss
 	NewTakeProfit   float64 `json:"new_take_profit,omitempty"`  // 用于 update_take_profit
-	ClosePercentage float64 `json:"close_percentage,omitempty"` // 用于 partial_close (0-100)
+	ClosePercentage float64 `json:"close_percentage,omitempty"` // 用于 partial_close (0-100) - 立即市价平仓
+
+	// 止盈/止损委托单参数 (新增)
+	TpTriggerPrice    float64 `json:"tp_trigger_price,omitempty"`    // 用于 set_tp_order: 止盈触发价格
+	TpClosePercentage float64 `json:"tp_close_percentage,omitempty"` // 用于 set_tp_order: 止盈平仓百分比
+	SlTriggerPrice    float64 `json:"sl_trigger_price,omitempty"`    // 用于 set_sl_order: 止损触发价格
 
 	// 通用参数
 	Confidence int     `json:"confidence,omitempty"` // 信心度 (0-100)
 	RiskUSD    float64 `json:"risk_usd,omitempty"`   // 最大美元风险
 	Reasoning  string  `json:"reasoning"`
 }
+
 
 // FullDecision AI的完整决策（包含思维链）
 type FullDecision struct {
@@ -278,7 +291,8 @@ func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinL
 			accountEquity*0.8, accountEquity*1.5, accountEquity*5, accountEquity*10))
 		sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
 		sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
-		sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
+		sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n")
+		sb.WriteString("7. **资金可用性**: 必须参考 `AvailableBalance`。你给出的 `position_size_usd / leverage` (即所需保证金) 不得超过可用余额的 80%。请确保决策是可执行的。\n\n")
 
 		// 3. 输出格式（必须保留，否则AI无法正确返回JSON）
 		sb.WriteString("# 输出格式 (严格遵守)\n\n")
@@ -327,6 +341,9 @@ func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinL
 	sb.WriteString("**重要提示：以下是交易员的核心策略指令，必须严格遵守，优先级高于所有其他规则！**\n\n")
 	sb.WriteString(customPrompt)
 	sb.WriteString("\n\n")
+	// 增加对可执行性的明确要求
+	sb.WriteString("**执行要求**：请根据下方提供的 `Account` 信息中的 `AvailableBalance` (可用余额) 来决定你的 `position_size_usd`。")
+	sb.WriteString("你给出的名义价值 `position_size_usd` 除以 `leverage` 得到的所需保证金，必须确保小于可用余额。禁止开出无法执行的超大仓位。\n\n")
 	sb.WriteString("---\n\n")
 	sb.WriteString("**再次强调**：上述策略是本次交易的**核心指导原则**，在不违背下方硬约束（风险控制）的前提下，必须优先执行！\n\n")
 	sb.WriteString(strings.Repeat("=", 80))
@@ -360,7 +377,8 @@ func buildSystemPromptWithCustom(accountEquity float64, btcEthLeverage, altcoinL
 		accountEquity*0.8, accountEquity*1.5, accountEquity*5, accountEquity*10))
 	sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
 	sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
-	sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
+	sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n")
+	sb.WriteString("7. **资金可用性**: 必须参考 `AvailableBalance`。你给出的 `position_size_usd / leverage` (即所需保证金) 不得超过可用余额的 80%。请确保决策是可执行的。\n\n")
 
 	// 4. 输出格式 - 动态生成
 	sb.WriteString("# 输出格式 (严格遵守)\n\n")
@@ -422,7 +440,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 		sb.WriteString("\n\n")
 	}
 
-	// 2. 硬约束（风险控制）- 动态生成
+	// 2. 硬约束（风险控制）
 	sb.WriteString("# 硬约束（风险控制）\n\n")
 	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
 	sb.WriteString("2. 最多持仓: 3个币种（质量>数量）\n")
@@ -430,7 +448,8 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 		accountEquity*0.8, accountEquity*1.5, accountEquity*5, accountEquity*10))
 	sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
 	sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
-	sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
+	sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n")
+	sb.WriteString("7. **资金可用性**: 必须参考 `AvailableBalance`。你给出的 `position_size_usd / leverage` (即所需保证金) 不得超过可用余额的 80%。请确保决策是可执行的。\n\n")
 
 	// 3. 输出格式 - 动态生成
 	sb.WriteString("# 输出格式 (严格遵守)\n\n")
@@ -470,13 +489,50 @@ func buildUserPrompt(ctx *Context) string {
 	}
 
 	// 账户
-	sb.WriteString(fmt.Sprintf("账户: 净值%.2f | 余额%.2f (%.1f%%) | 盈亏%+.2f%% | 保证金%.1f%% | 持仓%d个\n\n",
+	sb.WriteString(fmt.Sprintf("账户: 初始%.2f | 净值%.2f | 余额%.2f (%.1f%%) | 盈亏%+.2f%% | 保证金%.1f%% | 持仓%d个\n\n",
+		ctx.Account.InitialBalance,
 		ctx.Account.TotalEquity,
 		ctx.Account.AvailableBalance,
 		(ctx.Account.AvailableBalance/ctx.Account.TotalEquity)*100,
 		ctx.Account.TotalPnLPct,
 		ctx.Account.MarginUsedPct,
 		ctx.Account.PositionCount))
+
+	// 活跃策略 (观测之前的策略)
+	if len(ctx.ActiveStrategies) > 0 {
+		sb.WriteString("## 📚 活跃策略 (正在跟踪的信号)\n")
+		sb.WriteString("这些是你之前决定执行并正在持续观测的策略信号。请对比当前市场数据，决定是否需要根据这些策略进行开仓、补仓、止盈或止损调整。\n\n")
+		for i, snap := range ctx.ActiveStrategies {
+			strat := snap.Strategy
+			sb.WriteString(fmt.Sprintf("%d. [%s] %s %s | 入场目标: %.4f | 杠杆: %dx\n",
+				i+1, strat.SignalID[:8], strat.Symbol, strat.Direction,
+				strat.Entry.PriceTarget, strat.LeverageRecommend))
+
+			if len(strat.Adds) > 0 {
+				sb.WriteString("   - 补仓点: ")
+				var adds []string
+				for _, a := range strat.Adds {
+					adds = append(adds, fmt.Sprintf("%.4f (%.0f%%)", a.Price, a.Percent*100))
+				}
+				sb.WriteString(strings.Join(adds, ", ") + "\n")
+			}
+
+			if len(strat.TakeProfits) > 0 {
+				sb.WriteString("   - 止盈点: ")
+				var tps []string
+				for _, tp := range strat.TakeProfits {
+					tps = append(tps, fmt.Sprintf("%.4f (%.0f%%)", tp.Price, tp.Percent*100))
+				}
+				sb.WriteString(strings.Join(tps, ", ") + "\n")
+			}
+
+			sb.WriteString(fmt.Sprintf("   - 止损价: %.4f\n", strat.StopLoss.Price))
+			if snap.PrevStrategy != nil {
+				sb.WriteString(fmt.Sprintf("   - 注意: 该策略相比上一版本有所变更 (原止损: %.4f)\n", snap.PrevStrategy.StopLoss.Price))
+			}
+			sb.WriteString("\n")
+		}
+	}
 
 	// 持仓（完整市场数据）
 	if len(ctx.Positions) > 0 {
@@ -535,16 +591,18 @@ func buildUserPrompt(ctx *Context) string {
 	}
 	sb.WriteString("\n")
 
-	// 夏普比率（直接传值，不要复杂格式化）
+	// 历史表现分析
 	if ctx.Performance != nil {
-		// 直接从interface{}中提取SharpeRatio
 		type PerformanceData struct {
-			SharpeRatio float64 `json:"sharpe_ratio"`
+			SharpeRatio  float64 `json:"sharpe_ratio"`
+			ProfitFactor float64 `json:"profit_factor"`
+			WinRate      float64 `json:"win_rate"`
 		}
 		var perfData PerformanceData
 		if jsonData, err := json.Marshal(ctx.Performance); err == nil {
 			if err := json.Unmarshal(jsonData, &perfData); err == nil {
-				sb.WriteString(fmt.Sprintf("## 📊 夏普比率: %.2f\n\n", perfData.SharpeRatio))
+				sb.WriteString(fmt.Sprintf("## 📊 交易表现: 盈亏比%.2f | 胜率%.1f%% | 夏普比率%.2f\n\n",
+					perfData.ProfitFactor, perfData.WinRate*100, perfData.SharpeRatio))
 			}
 		}
 	}
@@ -664,6 +722,18 @@ func extractDecisions(response string) ([]Decision, error) {
 	// 注意：此时 jsonPart 已经过 fixMissingQuotes()，全角字符已转换为半角
 	jsonContent := strings.TrimSpace(reJSONArray.FindString(jsonPart))
 	if jsonContent == "" {
+		// 🧩 兼容：部分模型会返回“单个 JSON 对象”而不是“对象数组”
+		if obj := strings.TrimSpace(reDecisionObject.FindString(jsonPart)); obj != "" {
+			log.Printf("⚠️  未找到JSON数组，但检测到单个决策对象，尝试按单对象解析")
+			var single Decision
+			if uerr := json.Unmarshal([]byte(obj), &single); uerr == nil {
+				single.Action = strings.ToLower(single.Action)
+				return []Decision{single}, nil
+			} else {
+				log.Printf("⚠️  单对象解析失败，将回退为安全等待; err=%v, content=%s", uerr, obj)
+			}
+		}
+
 		// 🔧 安全回退 (Safe Fallback)：当AI只输出思维链没有JSON时，生成保底决策（避免系统崩溃）
 		log.Printf("⚠️  [SafeFallback] AI未输出JSON决策，进入安全等待模式 (AI response without JSON, entering safe wait mode)")
 

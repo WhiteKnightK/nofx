@@ -33,6 +33,18 @@ type StrategySnapshot struct {
 	Time         time.Time
 }
 
+// GetActiveStrategies 获取所有活跃策略快照
+func (sm *StrategyManager) GetActiveStrategies() []*StrategySnapshot {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var results []*StrategySnapshot
+	for _, snapshot := range sm.strategies {
+		results = append(results, snapshot)
+	}
+	return results
+}
+
 // GlobalManager 全局单例
 var GlobalManager *StrategyManager
 

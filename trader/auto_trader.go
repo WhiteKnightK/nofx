@@ -662,6 +662,7 @@ func (at *AutoTrader) runCycle() error {
 		if err := at.executeDecisionWithRecord(&d, &actionRecord); err != nil {
 			log.Printf("❌ 执行决策失败 (%s %s): %v", d.Symbol, d.Action, err)
 			actionRecord.Error = err.Error()
+			actionRecord.Success = false
 			record.ExecutionLog = append(record.ExecutionLog, fmt.Sprintf("❌ %s %s 失败: %v", d.Symbol, d.Action, err))
 		} else {
 			actionRecord.Success = true
@@ -669,6 +670,9 @@ func (at *AutoTrader) runCycle() error {
 			// 成功执行后短暂延迟
 			time.Sleep(1 * time.Second)
 		}
+
+		// 🔍 保存到数据库历史记录，以便前端展示错误
+		at.saveDecisionToDB(&d, &actionRecord, decision.SystemPrompt, decision.UserPrompt, decision.RawAIResponse)
 
 		record.Decisions = append(record.Decisions, actionRecord)
 	}
@@ -820,6 +824,7 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 		BTCETHLeverage:  at.config.BTCETHLeverage,  // 使用配置的杠杆倍数
 		AltcoinLeverage: at.config.AltcoinLeverage, // 使用配置的杠杆倍数
 		Account: decision.AccountInfo{
+			InitialBalance:   at.config.InitialBalance, // 传递初始余额
 			TotalEquity:      totalEquity,
 			AvailableBalance: availableBalance,
 			TotalPnL:         totalPnL,
@@ -828,9 +833,10 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 			MarginUsedPct:    marginUsedPct,
 			PositionCount:    len(positionInfos),
 		},
-		Positions:      positionInfos,
-		CandidateCoins: candidateCoins,
-		Performance:    performance, // 添加历史表现分析
+		Positions:        positionInfos,
+		ActiveStrategies: signal.GlobalManager.GetActiveStrategies(),
+		CandidateCoins:   candidateCoins,
+		Performance:      performance, // 添加历史表现分析
 	}
 
 	return ctx, nil
@@ -853,6 +859,10 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *decision.Decision, act
 		return at.executeUpdateTakeProfitWithRecord(decision, actionRecord)
 	case "partial_close":
 		return at.executePartialCloseWithRecord(decision, actionRecord)
+	case "set_tp_order":
+		return at.executeSetTPOrderWithRecord(decision, actionRecord)
+	case "set_sl_order":
+		return at.executeSetSLOrderWithRecord(decision, actionRecord)
 	case "hold", "wait":
 		// 无需执行，仅记录
 		return nil
@@ -860,6 +870,7 @@ func (at *AutoTrader) executeDecisionWithRecord(decision *decision.Decision, act
 		return fmt.Errorf("未知的action: %s", decision.Action)
 	}
 }
+
 
 // executeOpenLongWithRecord 执行开多仓并记录详细信息
 func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, actionRecord *logger.DecisionAction) error {
@@ -875,6 +886,27 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 		}
 	}
 
+	// 先获取账户余额，用于后续保证金校验和自动缩小仓位
+	balance, err := at.trader.GetBalance()
+	if err != nil {
+		return fmt.Errorf("获取账户余额失败: %w", err)
+	}
+	availableBalance := 0.0
+	if avail, ok := balance["availableBalance"].(float64); ok {
+		availableBalance = avail
+	}
+
+	// ⚠️ 自动缩小仓位：防止因 AI 给出的名义金额过大导致保证金不足
+	if decision.Leverage <= 0 {
+		decision.Leverage = at.config.BTCETHLeverage
+	}
+	maxPositionSizeUSD := availableBalance * float64(decision.Leverage) * 0.95 // 预留 5% 作为手续费和波动缓冲
+	if decision.PositionSizeUSD > maxPositionSizeUSD {
+		log.Printf("  ⚠️ 开多金额 %.2f USDT 超过账户可承受上限 %.2f USDT（可用余额 %.2f, 杠杆 %dx），自动缩小仓位",
+			decision.PositionSizeUSD, maxPositionSizeUSD, availableBalance, decision.Leverage)
+		decision.PositionSizeUSD = maxPositionSizeUSD
+	}
+
 	// 获取当前价格
 	marketData, err := market.Get(decision.Symbol)
 	if err != nil {
@@ -888,15 +920,6 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 
 	// ⚠️ 保证金验证：防止保证金不足错误（code=-2019）
 	requiredMargin := decision.PositionSizeUSD / float64(decision.Leverage)
-
-	balance, err := at.trader.GetBalance()
-	if err != nil {
-		return fmt.Errorf("获取账户余额失败: %w", err)
-	}
-	availableBalance := 0.0
-	if avail, ok := balance["availableBalance"].(float64); ok {
-		availableBalance = avail
-	}
 
 	// 手续费估算（Taker费率 0.04%）
 	estimatedFee := decision.PositionSizeUSD * 0.0004
@@ -955,6 +978,27 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 		}
 	}
 
+	// 先获取账户余额，用于后续保证金校验和自动缩小仓位
+	balance, err := at.trader.GetBalance()
+	if err != nil {
+		return fmt.Errorf("获取账户余额失败: %w", err)
+	}
+	availableBalance := 0.0
+	if avail, ok := balance["availableBalance"].(float64); ok {
+		availableBalance = avail
+	}
+
+	// ⚠️ 自动缩小仓位：防止因 AI 给出的名义金额过大导致保证金不足
+	if decision.Leverage <= 0 {
+		decision.Leverage = at.config.BTCETHLeverage
+	}
+	maxPositionSizeUSD := availableBalance * float64(decision.Leverage) * 0.95 // 预留 5% 作为手续费和波动缓冲
+	if decision.PositionSizeUSD > maxPositionSizeUSD {
+		log.Printf("  ⚠️ 开空金额 %.2f USDT 超过账户可承受上限 %.2f USDT（可用余额 %.2f, 杠杆 %dx），自动缩小仓位",
+			decision.PositionSizeUSD, maxPositionSizeUSD, availableBalance, decision.Leverage)
+		decision.PositionSizeUSD = maxPositionSizeUSD
+	}
+
 	// 获取当前价格
 	marketData, err := market.Get(decision.Symbol)
 	if err != nil {
@@ -968,15 +1012,6 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 
 	// ⚠️ 保证金验证：防止保证金不足错误（code=-2019）
 	requiredMargin := decision.PositionSizeUSD / float64(decision.Leverage)
-
-	balance, err := at.trader.GetBalance()
-	if err != nil {
-		return fmt.Errorf("获取账户余额失败: %w", err)
-	}
-	availableBalance := 0.0
-	if avail, ok := balance["availableBalance"].(float64); ok {
-		availableBalance = avail
-	}
 
 	// 手续费估算（Taker费率 0.04%）
 	estimatedFee := decision.PositionSizeUSD * 0.0004
@@ -1328,10 +1363,151 @@ func (at *AutoTrader) executePartialCloseWithRecord(decision *decision.Decision,
 	return nil
 }
 
+// executeSetTPOrderWithRecord 设置止盈委托单（挂单，达到触发价后自动平仓）
+func (at *AutoTrader) executeSetTPOrderWithRecord(decision *decision.Decision, actionRecord *logger.DecisionAction) error {
+	log.Printf("  📈 设置止盈单: %s @ %.2f (平仓 %.0f%%)", decision.Symbol, decision.TpTriggerPrice, decision.TpClosePercentage)
+
+	// 获取当前价格
+	marketData, err := market.Get(decision.Symbol)
+	if err != nil {
+		return err
+	}
+	actionRecord.Price = marketData.CurrentPrice
+
+	// 获取当前持仓
+	positions, err := at.trader.GetPositions()
+	if err != nil {
+		return fmt.Errorf("获取持仓失败: %w", err)
+	}
+
+	// 查找目标持仓
+	var targetPosition map[string]interface{}
+	for _, pos := range positions {
+		symbol, _ := pos["symbol"].(string)
+		posAmt, _ := pos["positionAmt"].(float64)
+		if symbol == decision.Symbol && posAmt != 0 {
+			targetPosition = pos
+			break
+		}
+	}
+
+	if targetPosition == nil {
+		return fmt.Errorf("持仓不存在: %s", decision.Symbol)
+	}
+
+	// 获取持仓方向和数量
+	side, _ := targetPosition["side"].(string)
+	positionSide := strings.ToUpper(side)
+	positionAmt, _ := targetPosition["positionAmt"].(float64)
+	available, ok := targetPosition["available"].(float64)
+	if !ok || available <= 0 {
+		available = positionAmt
+	}
+
+	// 验证止盈触发价格
+	if decision.TpTriggerPrice <= 0 {
+		return fmt.Errorf("止盈触发价格无效: %.2f", decision.TpTriggerPrice)
+	}
+
+	// 验证方向与止盈价的关系
+	if positionSide == "LONG" && decision.TpTriggerPrice <= marketData.CurrentPrice {
+		return fmt.Errorf("多单止盈价必须高于当前价格 (当前: %.2f, 止盈: %.2f)", marketData.CurrentPrice, decision.TpTriggerPrice)
+	}
+	if positionSide == "SHORT" && decision.TpTriggerPrice >= marketData.CurrentPrice {
+		return fmt.Errorf("空单止盈价必须低于当前价格 (当前: %.2f, 止盈: %.2f)", marketData.CurrentPrice, decision.TpTriggerPrice)
+	}
+
+	// 计算止盈数量
+	closePercent := decision.TpClosePercentage
+	if closePercent <= 0 || closePercent > 100 {
+		closePercent = 100 // 默认全部止盈
+	}
+	quantity := math.Abs(available) * (closePercent / 100)
+	actionRecord.Quantity = quantity
+
+	// 设置止盈委托
+	err = at.trader.SetTakeProfit(decision.Symbol, positionSide, quantity, decision.TpTriggerPrice)
+	if err != nil {
+		return fmt.Errorf("设置止盈单失败: %w", err)
+	}
+
+	log.Printf("  ✓ 止盈单已设置: %s @ %.2f 平仓 %.4f (%.0f%%)", decision.Symbol, decision.TpTriggerPrice, quantity, closePercent)
+	return nil
+}
+
+// executeSetSLOrderWithRecord 设置止损委托单（挂单，达到触发价后自动平仓）
+func (at *AutoTrader) executeSetSLOrderWithRecord(decision *decision.Decision, actionRecord *logger.DecisionAction) error {
+	log.Printf("  📉 设置止损单: %s @ %.2f", decision.Symbol, decision.SlTriggerPrice)
+
+	// 获取当前价格
+	marketData, err := market.Get(decision.Symbol)
+	if err != nil {
+		return err
+	}
+	actionRecord.Price = marketData.CurrentPrice
+
+	// 获取当前持仓
+	positions, err := at.trader.GetPositions()
+	if err != nil {
+		return fmt.Errorf("获取持仓失败: %w", err)
+	}
+
+	// 查找目标持仓
+	var targetPosition map[string]interface{}
+	for _, pos := range positions {
+		symbol, _ := pos["symbol"].(string)
+		posAmt, _ := pos["positionAmt"].(float64)
+		if symbol == decision.Symbol && posAmt != 0 {
+			targetPosition = pos
+			break
+		}
+	}
+
+	if targetPosition == nil {
+		return fmt.Errorf("持仓不存在: %s", decision.Symbol)
+	}
+
+	// 获取持仓方向和数量
+	side, _ := targetPosition["side"].(string)
+	positionSide := strings.ToUpper(side)
+	positionAmt, _ := targetPosition["positionAmt"].(float64)
+	available, ok := targetPosition["available"].(float64)
+	if !ok || available <= 0 {
+		available = positionAmt
+	}
+
+	// 验证止损触发价格
+	if decision.SlTriggerPrice <= 0 {
+		return fmt.Errorf("止损触发价格无效: %.2f", decision.SlTriggerPrice)
+	}
+
+	// 验证方向与止损价的关系
+	if positionSide == "LONG" && decision.SlTriggerPrice >= marketData.CurrentPrice {
+		return fmt.Errorf("多单止损价必须低于当前价格 (当前: %.2f, 止损: %.2f)", marketData.CurrentPrice, decision.SlTriggerPrice)
+	}
+	if positionSide == "SHORT" && decision.SlTriggerPrice <= marketData.CurrentPrice {
+		return fmt.Errorf("空单止损价必须高于当前价格 (当前: %.2f, 止损: %.2f)", marketData.CurrentPrice, decision.SlTriggerPrice)
+	}
+
+	// 止损全仓
+	quantity := math.Abs(available)
+	actionRecord.Quantity = quantity
+
+	// 设置止损委托
+	err = at.trader.SetStopLoss(decision.Symbol, positionSide, quantity, decision.SlTriggerPrice)
+	if err != nil {
+		return fmt.Errorf("设置止损单失败: %w", err)
+	}
+
+	log.Printf("  ✓ 止损单已设置: %s @ %.2f 平仓 %.4f", decision.Symbol, decision.SlTriggerPrice, quantity)
+	return nil
+}
+
 // GetID 获取trader ID
 func (at *AutoTrader) GetID() string {
 	return at.id
 }
+
 
 // GetName 获取trader名称
 func (at *AutoTrader) GetName() string {
@@ -1902,6 +2078,23 @@ func (at *AutoTrader) RunSignalMode() error {
 	for at.isRunning {
 		select {
 		case <-ticker.C:
+			// 🔄 强制从数据库同步最新配置（确保Prompt实时生效）
+			if at.database != nil {
+				if db, ok := at.database.(*sysconfig.Database); ok {
+					traderRecord, err := db.GetTraderByID(at.id)
+					if err == nil && traderRecord != nil {
+						at.mu.Lock()
+						if at.customPrompt != traderRecord.CustomPrompt || at.initialBalance != traderRecord.InitialBalance {
+							log.Printf("🔄 [%s] 检测到配置变更 (附加提示词或初始余额)，正在同步...", at.name)
+						}
+						at.customPrompt = traderRecord.CustomPrompt
+						at.config.InitialBalance = traderRecord.InitialBalance
+						at.initialBalance = traderRecord.InitialBalance
+						at.mu.Unlock()
+					}
+				}
+			}
+
 			// 如果全局管理器未初始化或未启动，等待
 			if signal.GlobalManager == nil {
 				continue
@@ -1965,13 +2158,55 @@ func (at *AutoTrader) CheckAndExecuteStrategy(strat *signal.SignalDecision) {
 	// A. 如果持有反向仓位 -> 平仓
 	if currentSide != "NONE" && currentSide != targetSide {
 		log.Printf("🔄 [信号执行] 发现反向持仓 (%s)，正在平仓...", currentSide)
+		
+		var closeErr error
 		if currentSide == "LONG" {
-			at.trader.CloseLong(strat.Symbol, 0)
+			_, closeErr = at.trader.CloseLong(strat.Symbol, 0)
 		} else {
-			at.trader.CloseShort(strat.Symbol, 0)
+			_, closeErr = at.trader.CloseShort(strat.Symbol, 0)
+		}
+		
+		// 【修复】记录反向平仓到数据库，避免"平仓但不记录"的问题
+		if db, ok := at.database.(*sysconfig.Database); ok {
+			action := "SIGNAL_REVERSE_CLOSE_LONG"
+			if currentSide == "SHORT" {
+				action = "SIGNAL_REVERSE_CLOSE_SHORT"
+			}
+			
+			reason := fmt.Sprintf("信号模式：检测到反向持仓(%s)，策略要求方向(%s)，执行平仓",
+				currentSide, targetSide)
+			if closeErr != nil {
+				reason += fmt.Sprintf(" [执行失败: %v]", closeErr)
+			}
+			
+			history := &sysconfig.StrategyDecisionHistory{
+				TraderID:         at.id,
+				StrategyID:       strat.SignalID,
+				DecisionTime:     time.Now(),
+				Action:           action,
+				Symbol:           strat.Symbol,
+				CurrentPrice:     marketData.CurrentPrice,
+				TargetPrice:      strat.Entry.PriceTarget,
+				PositionSide:     currentSide,
+				PositionQty:      currentQty,
+				AmountPercent:    1.0, // 100% 平仓
+				Reason:           reason,
+				ExecutionSuccess: closeErr == nil,
+				ExecutionError:   "",
+			}
+			if closeErr != nil {
+				history.ExecutionError = closeErr.Error()
+			}
+			
+			if err := db.SaveStrategyDecision(history); err != nil {
+				log.Printf("⚠️ 保存反向平仓决策历史失败: %v", err)
+			} else {
+				log.Printf("📝 已记录反向平仓决策: %s | %s", action, strat.Symbol)
+			}
 		}
 		return
 	}
+
 
 	// B. 计算期望仓位比例
 	// 基础仓位 (底仓)
@@ -2234,7 +2469,15 @@ func (at *AutoTrader) CheckAndExecuteStrategyWithAI(strat *signal.SignalDecision
 
 	currentPrice := closes1h[len(closes1h)-1]
 
-	// 2. 获取当前持仓
+	// 1.1 获取历史表现分析
+	var perfInfo string = "暂无数据"
+	performance, err := at.decisionLogger.AnalyzePerformance(100)
+	if err == nil && performance != nil {
+		perfInfo = fmt.Sprintf("盈亏比%.2f | 胜率%.1f%% | 夏普比率%.2f",
+			performance.ProfitFactor, performance.WinRate*100, performance.SharpeRatio)
+	}
+
+	// 2. 获取当前持仓和账户余额
 	var currentQty float64 = 0
 	var currentSide string = "NONE"
 	var avgPrice float64 = 0
@@ -2256,6 +2499,27 @@ func (at *AutoTrader) CheckAndExecuteStrategyWithAI(strat *signal.SignalDecision
 			}
 		}
 	}
+
+	// 获取账户余额
+	balance, err := at.trader.GetBalance()
+	if err != nil {
+		log.Printf("⚠️ [Executor] 获取账户余额失败: %v", err)
+	}
+	availableBalance := 0.0
+	totalWalletBalance := 0.0
+	totalUnrealizedProfit := 0.0
+	if balance != nil {
+		if avail, ok := balance["availableBalance"].(float64); ok {
+			availableBalance = avail
+		}
+		if wallet, ok := balance["totalWalletBalance"].(float64); ok {
+			totalWalletBalance = wallet
+		}
+		if unrealized, ok := balance["totalUnrealizedProfit"].(float64); ok {
+			totalUnrealizedProfit = unrealized
+		}
+	}
+	totalEquity := totalWalletBalance + totalUnrealizedProfit
 
 	// 2.1 检查是否出现「交易所已平仓但本地状态仍为未结束」的情况
 	if dbStatus != nil {
@@ -2330,6 +2594,15 @@ func (at *AutoTrader) CheckAndExecuteStrategyWithAI(strat *signal.SignalDecision
 	addsBytes, _ := json.Marshal(strat.Adds)
 	addsJson := string(addsBytes)
 
+	// 获取自定义提示词
+	customPromptText := ""
+	at.mu.RLock()
+	if at.customPrompt != "" {
+		customPromptText = fmt.Sprintf("\n# 附加核心策略指令 (必须严格遵守):\n%s\n", at.customPrompt)
+	}
+	at.mu.RUnlock()
+
+	prompt = strings.ReplaceAll(prompt, "{{CUSTOM_PROMPT}}", customPromptText)
 	prompt = strings.ReplaceAll(prompt, "{{STRATEGY_DIRECTION}}", strat.Direction)
 	prompt = strings.ReplaceAll(prompt, "{{SYMBOL}}", strat.Symbol)
 	prompt = strings.ReplaceAll(prompt, "{{ENTRY_PRICE}}", fmt.Sprintf("%.2f", strat.Entry.PriceTarget))
@@ -2348,6 +2621,25 @@ func (at *AutoTrader) CheckAndExecuteStrategyWithAI(strat *signal.SignalDecision
 	prompt = strings.ReplaceAll(prompt, "{{UNREALIZED_PNL}}", fmt.Sprintf("%.2f", pnlPercent))
 	prompt = strings.ReplaceAll(prompt, "{{EXECUTION_STATUS}}", execStatus)
 	prompt = strings.ReplaceAll(prompt, "{{EXECUTED_ADD_COUNT}}", fmt.Sprintf("%d", executedAdds))
+
+	// 账户资金信息
+	prompt = strings.ReplaceAll(prompt, "{{INITIAL_BALANCE}}", fmt.Sprintf("%.2f", at.config.InitialBalance))
+	prompt = strings.ReplaceAll(prompt, "{{TOTAL_EQUITY}}", fmt.Sprintf("%.2f", totalEquity))
+	prompt = strings.ReplaceAll(prompt, "{{AVAILABLE_BALANCE}}", fmt.Sprintf("%.2f", availableBalance))
+	prompt = strings.ReplaceAll(prompt, "{{PERFORMANCE_INFO}}", perfInfo)
+
+	// 活跃策略信息 (用于观测之前的策略)
+	activeStrats := signal.GlobalManager.GetActiveStrategies()
+	var stratsInfo strings.Builder
+	for _, s := range activeStrats {
+		if s.Strategy == nil {
+			continue
+		}
+		stratsInfo.WriteString(fmt.Sprintf("- [%s] %s %s (入场:%.2f, 止损:%.2f)\n",
+			s.Strategy.SignalID[:8], s.Strategy.Symbol, s.Strategy.Direction,
+			s.Strategy.Entry.PriceTarget, s.Strategy.StopLoss.Price))
+	}
+	prompt = strings.ReplaceAll(prompt, "{{ACTIVE_STRATEGIES}}", stratsInfo.String())
 
 	// 当前委托状态：为了兼容交易所API，对全部委托做一次查询，再按当前策略交易对筛选
 	ordersJSON := "[]"
@@ -2383,13 +2675,30 @@ func (at *AutoTrader) CheckAndExecuteStrategyWithAI(strat *signal.SignalDecision
 	// 4. 调用 AI
 	log.Printf("🤖 [AI执行] 正在思考 %s (RSI: %.1f)...", strat.Symbol, rsi1h)
 
+	// 准备系统提示词
+	systemPrompt := "你是一个严格的交易执行AI。"
+	at.mu.RLock()
+	if at.customPrompt != "" {
+		systemPrompt = fmt.Sprintf("%s\n\n# 附加核心策略指令 (必须严格遵守):\n%s", systemPrompt, at.customPrompt)
+	}
+	at.mu.RUnlock()
+
+	// 🔍 调试：打印发送给AI的完整提示词，以便用户核对
+	log.Printf("\n" + strings.Repeat("=", 70))
+	log.Printf("📋 [信号模式] 系统提示词 (System Prompt):")
+	log.Println(systemPrompt)
+	log.Printf(strings.Repeat("-", 70))
+	log.Printf("📋 [信号模式] 用户输入 (User Prompt):")
+	log.Println(prompt)
+	log.Printf(strings.Repeat("=", 70) + "\n")
+
 	// 检查 AI Key 是否有效，如果无效尝试重新加载 (防止panic)
 	if at.mcpClient.APIKey == "" {
 		log.Println("⚠️ [Executor] AI Key 丢失，尝试恢复...")
 		// 这里简化处理，实际上应该有一个更好的全局恢复机制
 	}
 
-	resp, err := at.mcpClient.CallWithMessages("你是一个严格的交易执行AI。", prompt)
+	resp, err := at.mcpClient.CallWithMessages(systemPrompt, prompt)
 	if err != nil {
 		log.Printf("❌ AI调用失败: %v", err)
 		return
@@ -2407,7 +2716,7 @@ func (at *AutoTrader) CheckAndExecuteStrategyWithAI(strat *signal.SignalDecision
 	log.Printf("🤖 [AI决策] 主动作: %s | 比例: %.0f%% | 理由: %s", summary.Action, summary.AmountPercent*100, summary.Reason)
 
 	// 6. 保存决策历史到数据库（记录主决策）
-	at.saveStrategyDecisionHistory(strat, &summary, currentPrice, rsi1h, rsi4h, macdHist4h, currentSide, currentQty, "你是一个严格的交易执行AI。", prompt, resp)
+	at.saveStrategyDecisionHistory(strat, &summary, currentPrice, rsi1h, rsi4h, macdHist4h, currentSide, currentQty, systemPrompt, prompt, resp)
 
 	// 7. 过滤出当前交易对相关的决策，并按优先级执行（先平仓/改单，再开仓）
 	var symbolDecisions []decision.Decision
@@ -2637,6 +2946,54 @@ func stepToStatus(step int) string {
 		return "ADD_2"
 	default:
 		return "WAITING"
+	}
+}
+
+// saveDecisionToDB 将单个 AI 决策执行结果保存到数据库历史记录
+func (at *AutoTrader) saveDecisionToDB(d *decision.Decision, result *logger.DecisionAction, systemPrompt, inputPrompt, rawResponse string) {
+	if at.database == nil {
+		return
+	}
+
+	db, ok := at.database.(*sysconfig.Database)
+	if !ok {
+		return
+	}
+
+	// 尝试获取该币种当前关联的策略ID
+	strategyID := ""
+	at.mu.RLock()
+	if id, ok := at.appliedStopStrategy[d.Symbol]; ok {
+		strategyID = id
+	}
+	at.mu.RUnlock()
+
+	// 如果没有关联策略ID，且是开仓动作，生成一个临时的唯一ID（标记为AI独立决策）
+	if strategyID == "" && (strings.Contains(d.Action, "open")) {
+		strategyID = fmt.Sprintf("ai_periodic_%s_%d", d.Symbol, time.Now().Unix())
+	}
+
+	history := &sysconfig.StrategyDecisionHistory{
+		TraderID:         at.id,
+		StrategyID:       strategyID,
+		DecisionTime:     time.Now(),
+		Action:           d.Action,
+		Symbol:           d.Symbol,
+		CurrentPrice:     result.Price,
+		TargetPrice:      0,  // 周期性决策通常没有固定目标价，使用当前价或0
+		PositionSide:     "", // 将在 SaveStrategyDecision 内部逻辑或后续更新中完善
+		PositionQty:      result.Quantity,
+		AmountPercent:    0,
+		Reason:           d.Reasoning,
+		SystemPrompt:     systemPrompt,
+		InputPrompt:      inputPrompt,
+		RawAIResponse:    rawResponse,
+		ExecutionSuccess: result.Success,
+		ExecutionError:   result.Error,
+	}
+
+	if err := db.SaveStrategyDecision(history); err != nil {
+		log.Printf("⚠️ 保存周期性决策历史失败: %v", err)
 	}
 }
 

@@ -16,6 +16,15 @@
 【上一版策略（如果存在，用于对比新旧差异）】
 {{PREV_STRATEGY_TEXT}}
 
+[当前账户状态]
+初始本金: {{INITIAL_BALANCE}} USDT
+当前总资产: {{TOTAL_EQUITY}} USDT
+当前可用余额: {{AVAILABLE_BALANCE}} USDT
+近期交易表现: {{PERFORMANCE_INFO}}
+
+[当前活跃策略（正在跟踪的其他信号）]
+{{ACTIVE_STRATEGIES}}
+
 [当前市场状态]
 当前价格: {{CURRENT_PRICE}}
 RSI (1h): {{RSI_1H}} (如果数据不足则为null)
@@ -38,26 +47,50 @@ MACD (4h): {{MACD_4H}} (如果数据不足则为null)
 请你在做决策时，务必结合这些已有委托，避免重复下单或遗漏需要修改/取消的委托。
 
 [指令]
+{{CUSTOM_PROMPT}}
+
 请分析当前情况，严格对照[全局策略]和[原始策略全文]中的条件，并特别注意以下执行规则：
-1. 新邮件中的策略视为“最新版策略”，你必须以最新策略为准，认为旧策略对应的止盈/止损/补仓计划已经废弃。
+0. **绝对禁令：禁止使用策略原文中的虚拟账户金额（如 $10,000）进行计算**。你必须且只能参考[当前账户状态]中的 `当前可用余额`。
+1. **可执行性硬约束**：你给出的 `position_size_usd / leverage` (即所需保证金) **绝对不能超过** `当前可用余额` 的 80%。请确保你的开仓决策是真实可执行的，禁止给出导致“保证金不足”的无效决策。
+2. 新邮件中的策略视为“最新版策略”，你必须以最新策略为准，认为旧策略对应的止盈/止损/补仓计划已经废弃。
 2. 当当前价格已经越过某个补仓价位时（多头: 当前价格 <= 补仓价；空头: 当前价格 >= 补仓价），应视为该补仓触发区间已被经过，可以在当前价格附近执行补仓，而不是机械地等待价格精确回踩到补仓价。
 3. 如果策略文本中有额外技术条件（如 RSI、形态），需要在“价格已越过触发价”的前提下，结合这些指标综合判断是否执行补仓，不能仅因为价格不等于某个精确点位就拒绝补仓。
 4. 当最新版策略的止盈/止损价位与旧策略不同且当前已经有持仓时，你需要理解为：应把原来的止盈/止损委托全部取消，并按照新策略给出的价位重新设置止盈/止损。
 5. 如果当前市场状态明显已经远离某个计划点位，且补仓/开仓再执行会显著背离策略风险控制，你可以选择 WAIT，但要在 reasoning 中清楚解释原因。
 6. 如果综合判断后暂不执行任何操作，请输出 action 为 "wait" 的决策，并清楚说明暂不执行的理由。
 
+【动作类型说明 - 请务必遵守】
+| 动作 | 类型 | 说明 |
+|------|------|------|
+| open_long / open_short | 立即执行 | 按当前市价开仓 |
+| close_long / close_short | 立即执行 | 按当前市价全部平仓 |
+| partial_close | **立即执行** | 按当前市价部分平仓（不是设置挂单！）|
+| set_tp_order | 设置委托单 | 设置止盈委托单，价格触发后自动平仓 |
+| set_sl_order | 设置委托单 | 设置止损委托单，价格触发后自动平仓 |
+| update_stop_loss | 修改委托 | 修改现有止损委托的价格 |
+| update_take_profit | 修改委托 | 修改现有止盈委托的价格 |
+| wait | 不执行 | 暂不操作，继续观察 |
+
+**重要约束**：
+- 当策略说"TP1平仓30%"时，应使用 `set_tp_order` 设置止盈挂单，**而非** `partial_close`
+- `partial_close` 仅用于：当前价格已达到或超过止盈目标，需要**立即**执行平仓
+- 如果当前价格未达止盈目标，禁止使用 `partial_close`
+
 请以 JSON 数组形式返回决策（不要包含 markdown 标记，不要额外包裹解释性文字），**每个元素代表一次具体操作**，格式必须满足（字段均为英文）：
 [
   {
     "symbol": "ETHUSDT",
-    "action": "open_long" | "open_short" | "close_long" | "close_short" | "update_stop_loss" | "update_take_profit" | "partial_close" | "hold" | "wait",
+    "action": "open_long" | "open_short" | "close_long" | "close_short" | "partial_close" | "set_tp_order" | "set_sl_order" | "update_stop_loss" | "update_take_profit" | "wait",
     "leverage": 5,                    // 开仓/加仓时使用的杠杆
     "position_size_usd": 500.0,       // 开仓/加仓时使用的名义仓位大小（以 USDT 计价）
     "stop_loss": 3038.0,              // 开仓时设置的止损价
     "take_profit": 2902.0,            // 开仓时设置的止盈价
-    "new_stop_loss": 3050.0,          // 当 action = \"update_stop_loss\" 时，新的止损价
-    "new_take_profit": 2890.0,        // 当 action = \"update_take_profit\" 时，新的止盈价
-    "close_percentage": 50.0,         // 当 action = \"partial_close\" 时，本次部分平仓的百分比（0-100）
+    "new_stop_loss": 3050.0,          // 当 action = "update_stop_loss" 时，新的止损价
+    "new_take_profit": 2890.0,        // 当 action = "update_take_profit" 时，新的止盈价
+    "close_percentage": 50.0,         // 当 action = "partial_close" 时，**立即**平仓的百分比
+    "tp_trigger_price": 3247.0,       // 当 action = "set_tp_order" 时，止盈触发价格
+    "tp_close_percentage": 30.0,      // 当 action = "set_tp_order" 时，止盈平仓百分比
+    "sl_trigger_price": 3020.0,       // 当 action = "set_sl_order" 时，止损触发价格
     "confidence": 80,                 // （可选）本次操作的信心度 0-100
     "risk_usd": 200.0,                // （可选）本次操作预计承担的最大风险金额
     "reasoning": "简短说明，解释为什么在当前价格/持仓/委托状态下做出该操作"
@@ -66,7 +99,6 @@ MACD (4h): {{MACD_4H}} (如果数据不足则为null)
 
 要求：
 - **只返回一个 JSON 数组**，不要在数组外输出其他任何内容。
-- JSON 数组中可以包含**多条操作**（例如：先 `close_long` 再 `open_short`，或同时 `update_stop_loss` + `update_take_profit`），系统会根据动作优先级自动排序并逐条执行。
-- 如果当前不满足任何执行条件，请**至少返回一条 `action: "wait"` 的决策**，并清楚说明暂不执行的理由（包括是因为价格尚未进入触发区间，还是已经严重偏离合理执行区间等）。
-
-
+- JSON 数组中可以包含**多条操作**（例如：先 `close_long` 再 `open_short`，或同时 `set_tp_order` + `set_sl_order`），系统会根据动作优先级自动排序并逐条执行。
+- 如果当前不满足任何执行条件，请**至少返回一条 `action: "wait"` 的决策**，并清楚说明暂不执行的理由。
+- **禁止**在价格未达止盈目标时使用 `partial_close`，应使用 `set_tp_order` 设置挂单。

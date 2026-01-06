@@ -338,6 +338,13 @@ func (t *BitgetTrader) GetPositions() ([]map[string]interface{}, error) {
 func (t *BitgetTrader) OpenLong(symbol string, quantity float64, leverage int) (map[string]interface{}, error) {
 	log.Printf("📊 开多仓: %s 数量: %.4f 杠杆: %dx", symbol, quantity, leverage)
 
+	// 先尝试设置杠杆（如果交易所已是该杠杆，会返回“无需变更”之类的提示，可安全忽略）
+	if leverage > 0 {
+		if err := t.SetLeverage(symbol, leverage); err != nil {
+			log.Printf("  ⚠️ 设置杠杆失败，将使用交易所当前默认杠杆: %v", err)
+		}
+	}
+
 	// 格式化数量
 	quantityStr, err := t.FormatQuantity(symbol, quantity)
 	if err != nil {
@@ -388,6 +395,13 @@ func (t *BitgetTrader) OpenLong(symbol string, quantity float64, leverage int) (
 // OpenShort 开空仓
 func (t *BitgetTrader) OpenShort(symbol string, quantity float64, leverage int) (map[string]interface{}, error) {
 	log.Printf("📊 开空仓: %s 数量: %.4f 杠杆: %dx", symbol, quantity, leverage)
+
+	// 同步设置杠杆
+	if leverage > 0 {
+		if err := t.SetLeverage(symbol, leverage); err != nil {
+			log.Printf("  ⚠️ 设置杠杆失败，将使用交易所当前默认杠杆: %v", err)
+		}
+	}
 
 	quantityStr, err := t.FormatQuantity(symbol, quantity)
 	if err != nil {

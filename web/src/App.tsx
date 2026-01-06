@@ -64,15 +64,15 @@ function App() {
     return 'competition' // 默认为竞赛页面
   }
 
-const [currentPage, setCurrentPage] = useState<Page>(getInitialPage())
-const [selectedTraderId, setSelectedTraderId] = useState<string | undefined>(() => {
-  // 优先从本地存储恢复上次查看的交易员
-  if (typeof window !== 'undefined') {
-    const lastId = localStorage.getItem('last_selected_trader_id')
-    return lastId || undefined
-  }
-  return undefined
-})
+  const [currentPage, setCurrentPage] = useState<Page>(getInitialPage())
+  const [selectedTraderId, setSelectedTraderId] = useState<string | undefined>(() => {
+    // 优先从本地存储恢复上次查看的交易员
+    if (typeof window !== 'undefined') {
+      const lastId = localStorage.getItem('last_selected_trader_id')
+      return lastId || undefined
+    }
+    return undefined
+  })
   const [lastUpdate, setLastUpdate] = useState<string>('--:--:--')
 
   // 监听URL变化，同步页面状态
@@ -125,41 +125,41 @@ const [selectedTraderId, setSelectedTraderId] = useState<string | undefined>(() 
     }
   )
 
-// 当获取到traders后，根据本地记忆/默认规则设置选中交易员
-useEffect(() => {
-  if (!traders || traders.length === 0) return
+  // 当获取到traders后，根据本地记忆/默认规则设置选中交易员
+  useEffect(() => {
+    if (!traders || traders.length === 0) return
 
-  // 已经有选中的 Trader，则只需校验是否仍然存在
-  if (selectedTraderId) {
-    const stillExists = traders.some((t) => t.trader_id === selectedTraderId)
-    if (!stillExists) {
-      const fallbackId = traders[0].trader_id
-      setSelectedTraderId(fallbackId)
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('last_selected_trader_id', fallbackId)
+    // 已经有选中的 Trader，则只需校验是否仍然存在
+    if (selectedTraderId) {
+      const stillExists = traders.some((t) => t.trader_id === selectedTraderId)
+      if (!stillExists) {
+        const fallbackId = traders[0].trader_id
+        setSelectedTraderId(fallbackId)
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('last_selected_trader_id', fallbackId)
+        }
+      }
+      return
+    }
+
+    // 没有选中记录时，尝试从本地存储恢复
+    let initialId: string | undefined
+    if (typeof window !== 'undefined') {
+      const lastId = localStorage.getItem('last_selected_trader_id')
+      if (lastId && traders.some((t) => t.trader_id === lastId)) {
+        initialId = lastId
       }
     }
-    return
-  }
 
-  // 没有选中记录时，尝试从本地存储恢复
-  let initialId: string | undefined
-  if (typeof window !== 'undefined') {
-    const lastId = localStorage.getItem('last_selected_trader_id')
-    if (lastId && traders.some((t) => t.trader_id === lastId)) {
-      initialId = lastId
+    if (!initialId) {
+      initialId = traders[0].trader_id
     }
-  }
 
-  if (!initialId) {
-    initialId = traders[0].trader_id
-  }
-
-  setSelectedTraderId(initialId)
-  if (typeof window !== 'undefined' && initialId) {
-    localStorage.setItem('last_selected_trader_id', initialId)
-  }
-}, [traders, selectedTraderId])
+    setSelectedTraderId(initialId)
+    if (typeof window !== 'undefined' && initialId) {
+      localStorage.setItem('last_selected_trader_id', initialId)
+    }
+  }, [traders, selectedTraderId])
 
   // 如果在trader页面，获取该trader的数据
   const { data: status } = useSWR<SystemStatus>(
@@ -465,9 +465,9 @@ function TraderDetailsPage({
   lastUpdate: string
   language: Language
 }) {
-  // AI 决策筛选状态：latest（最新50条）| open（所有开仓）| close（所有平仓）
-  const [decisionFilter, setDecisionFilter] = useState<'latest' | 'open' | 'close'>('latest')
-  
+  // AI 决策筛选状态：latest（最新50条）| open（所有开仓）| close（所有平仓）| sltp（止盈止损）
+  const [decisionFilter, setDecisionFilter] = useState<'latest' | 'open' | 'close' | 'sltp'>('latest')
+
   // 获取决策历史（根据筛选模式动态获取）
   const { data: decisionsData, mutate: mutateDecisions } = useSWR<{
     decisions: StrategyDecisionHistory[]
@@ -482,14 +482,14 @@ function TraderDetailsPage({
       dedupingInterval: 20000,
     }
   )
-  
+
   const decisions = decisionsData?.decisions || []
-  
+
   // Fetch active strategies and statuses for the selected trader
   const { data: strategiesData, mutate: mutateStrategies } = useSWR(
     selectedTraderId ? `activeStrategies` : null,
     api.getActiveStrategies,
-    { 
+    {
       refreshInterval: 5000,
       keepPreviousData: true, // 保持旧数据，防止闪烁
       fallbackData: []        // 默认空数组
@@ -499,7 +499,7 @@ function TraderDetailsPage({
   const { data: strategyStatuses, mutate: mutateStatuses } = useSWR(
     selectedTraderId ? `strategyStatuses-${selectedTraderId}` : null,
     () => api.getTraderStrategyStatuses(selectedTraderId!),
-    { 
+    {
       refreshInterval: 5000,
       keepPreviousData: true, // 保持旧数据，防止闪烁
       fallbackData: []        // 默认空数组
@@ -512,7 +512,7 @@ function TraderDetailsPage({
   // 平仓操作
   const handleClosePosition = async (pos: Position) => {
     const confirmMsg = `确认平仓？\n\n交易对: ${pos.symbol}\n方向: ${pos.side === 'long' ? '多' : '空'}仓\n数量: ${pos.quantity}\n未实现盈亏: ${pos.unrealized_pnl.toFixed(2)} USDT (${pos.unrealized_pnl_pct.toFixed(2)}%)`
-    
+
     if (!confirm(confirmMsg)) {
       return
     }
@@ -528,10 +528,10 @@ function TraderDetailsPage({
       })
 
       console.log('平仓成功:', response)
-      
+
       // 显示成功消息并提示用户刷新
       alert(`✅ 平仓成功！\n\n交易对: ${pos.symbol}\n方向: ${pos.side === 'long' ? '多' : '空'}仓\n\n页面将自动刷新以更新持仓列表`)
-      
+
       // 刷新页面以更新所有数据
       window.location.reload()
     } catch (err: any) {
@@ -756,7 +756,7 @@ function TraderDetailsPage({
             >
               {getModelDisplayName(
                 selectedTrader.ai_model.split('_').pop() ||
-                  selectedTrader.ai_model
+                selectedTrader.ai_model
               )}
             </span>
           </span>
@@ -836,7 +836,7 @@ function TraderDetailsPage({
                 📈 {t('currentPositions', language)}
               </h2>
               <div className="flex items-center gap-3">
-                <button 
+                <button
                   onClick={() => window.location.reload()}
                   className="p-1.5 rounded hover:bg-[#2B3139] transition-colors"
                   title="刷新"
@@ -911,13 +911,13 @@ function TraderDetailsPage({
                             style={
                               pos.side === 'long'
                                 ? {
-                                    background: 'rgba(14, 203, 129, 0.1)',
-                                    color: '#0ECB81',
-                                  }
+                                  background: 'rgba(14, 203, 129, 0.1)',
+                                  color: '#0ECB81',
+                                }
                                 : {
-                                    background: 'rgba(246, 70, 93, 0.1)',
-                                    color: '#F6465D',
-                                  }
+                                  background: 'rgba(246, 70, 93, 0.1)',
+                                  color: '#F6465D',
+                                }
                             }
                           >
                             {t(
@@ -981,11 +981,11 @@ function TraderDetailsPage({
                             disabled={closingPosition === `${pos.symbol}-${pos.side}`}
                             className="px-3 py-1 rounded text-xs font-bold transition-all"
                             style={{
-                              background: closingPosition === `${pos.symbol}-${pos.side}` 
-                                ? 'rgba(132, 142, 156, 0.1)' 
+                              background: closingPosition === `${pos.symbol}-${pos.side}`
+                                ? 'rgba(132, 142, 156, 0.1)'
                                 : 'rgba(246, 70, 93, 0.1)',
-                              color: closingPosition === `${pos.symbol}-${pos.side}` 
-                                ? '#848E9C' 
+                              color: closingPosition === `${pos.symbol}-${pos.side}`
+                                ? '#848E9C'
                                 : '#F6465D',
                               border: `1px solid ${closingPosition === `${pos.symbol}-${pos.side}` ? '#848E9C' : '#F6465D'}`,
                               cursor: closingPosition === `${pos.symbol}-${pos.side}` ? 'not-allowed' : 'pointer',
@@ -1014,7 +1014,7 @@ function TraderDetailsPage({
         </div>
         {/* 左侧结束 */}
 
-      {/* 右侧：Recent Decisions - 卡片容器 */}
+        {/* 右侧：Recent Decisions - 卡片容器 */}
         <div
           className="binance-card p-6 animate-slide-in h-fit lg:sticky lg:top-24 lg:max-h-[calc(100vh-120px)] hover:shadow-[0_0_20px_rgba(99,102,241,0.05)] transition-all duration-300"
           style={{ animationDelay: '0.2s' }}
@@ -1038,7 +1038,7 @@ function TraderDetailsPage({
                 <h2 className="text-xl font-bold" style={{ color: '#EAECEF' }}>
                   {t('recentDecisions', language)}
                 </h2>
-                <button 
+                <button
                   onClick={() => mutateDecisions()}
                   className="p-1 rounded hover:bg-[#2B3139] transition-colors"
                 >
@@ -1062,34 +1062,40 @@ function TraderDetailsPage({
           >
             <span>筛选决策:</span>
             <button
-              className={`px-2 py-0.5 rounded border text-xs ${
-                decisionFilter === 'latest'
+              className={`px-2 py-0.5 rounded border text-xs ${decisionFilter === 'latest'
                   ? 'border-[#F0B90B] text-[#F0B90B] bg-[#F0B90B]/10'
                   : 'border-transparent hover:border-[#2B3139]'
-              }`}
+                }`}
               onClick={() => setDecisionFilter('latest')}
             >
               最新50条
             </button>
             <button
-              className={`px-2 py-0.5 rounded border text-xs ${
-                decisionFilter === 'open'
+              className={`px-2 py-0.5 rounded border text-xs ${decisionFilter === 'open'
                   ? 'border-green-500 text-green-400 bg-green-500/10'
                   : 'border-transparent hover:border-[#2B3139]'
-              }`}
+                }`}
               onClick={() => setDecisionFilter('open')}
             >
               所有开仓
             </button>
             <button
-              className={`px-2 py-0.5 rounded border text-xs ${
-                decisionFilter === 'close'
+              className={`px-2 py-0.5 rounded border text-xs ${decisionFilter === 'close'
                   ? 'border-red-500 text-red-400 bg-red-500/10'
                   : 'border-transparent hover:border-[#2B3139]'
-              }`}
+                }`}
               onClick={() => setDecisionFilter('close')}
             >
               所有平仓
+            </button>
+            <button
+              className={`px-2 py-0.5 rounded border text-xs ${decisionFilter === 'sltp'
+                  ? 'border-blue-500 text-blue-400 bg-blue-500/10'
+                  : 'border-transparent hover:border-[#2B3139]'
+                }`}
+              onClick={() => setDecisionFilter('sltp')}
+            >
+              止盈止损
             </button>
           </div>
 
@@ -1172,10 +1178,10 @@ function TraderDetailsPage({
             <>
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xl font-bold text-[#EAECEF] flex items-center gap-2">
-                    <span className="w-1 h-6 bg-[#6366F1] rounded-full mr-1"></span>
-                    🚀 活跃策略池 ({activeRenderList.length})
+                  <span className="w-1 h-6 bg-[#6366F1] rounded-full mr-1"></span>
+                  🚀 活跃策略池 ({activeRenderList.length})
                 </h3>
-                <button 
+                <button
                   onClick={() => {
                     mutateStrategies();
                     mutateStatuses();
@@ -1210,7 +1216,7 @@ function TraderDetailsPage({
                 })
               ) : (
                 <div className="bg-[#1E2329] rounded-lg border border-[#2B3139] p-8 text-center text-[#848E9C]">
-                    暂无活跃策略
+                  暂无活跃策略
                 </div>
               )}
             </>
@@ -1219,9 +1225,9 @@ function TraderDetailsPage({
 
         {/* 📊 全量策略信号库 */}
         <div className="mt-8">
-            <ParsedSignalsPanel 
-                strategyStatuses={strategyStatuses}
-            />
+          <ParsedSignalsPanel
+            strategyStatuses={strategyStatuses}
+          />
         </div>
       </div>
 
@@ -1269,6 +1275,15 @@ function TraderDetailsPage({
                     {status && (
                       <div className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(132,142,156,0.15)', color: '#A0AEC0' }}>
                         {status.status}
+                      </div>
+                    )}
+                    {decision.execution_success === false && (
+                      <div
+                        className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/10 text-red-500 border border-red-500/20 flex items-center gap-1"
+                        title={decision.execution_error}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                        执行失败: {decision.execution_error?.substring(0, 20)}{decision.execution_error?.length > 20 ? '...' : ''}
                       </div>
                     )}
                   </div>

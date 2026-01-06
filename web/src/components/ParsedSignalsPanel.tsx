@@ -135,15 +135,15 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
             <option value="price">按目标价格</option>
           </select>
 
-          <button 
-            onClick={() => mutate()}
-            className="px-4 py-2 rounded-xl text-xs font-bold bg-[#2B3139] text-[#EAECEF] hover:bg-white/10 active:scale-95 transition-all flex items-center gap-2 border border-white/5"
-          >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            刷新
-          </button>
+        <button 
+          onClick={() => mutate()}
+          className="px-4 py-2 rounded-xl text-xs font-bold bg-[#2B3139] text-[#EAECEF] hover:bg-white/10 active:scale-95 transition-all flex items-center gap-2 border border-white/5"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          刷新
+        </button>
         </div>
       </div>
 
@@ -176,10 +176,10 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
                 const latestBySymbol: Record<string, string> = {}
                 if (signals && Array.isArray(signals)) {
                   [...signals].sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime()).forEach((sig: any) => {
-                    if (!latestBySymbol[sig.symbol]) {
-                      latestBySymbol[sig.symbol] = sig.signal_id
-                    }
-                  })
+                  if (!latestBySymbol[sig.symbol]) {
+                    latestBySymbol[sig.symbol] = sig.signal_id
+                  }
+                })
                 }
 
                 return (processedSignals as any[]).map((sig: any) => {
@@ -297,14 +297,14 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
                       </div>
                     </td>
                     <td className="px-6 py-5">
-                      <div className="flex flex-col gap-1.5">
-                        <div
-                          className={`text-[10px] px-2 py-0.5 rounded-lg inline-flex items-center gap-1.5 font-black border uppercase ${badgeClass}`}
-                        >
-                          <span className={`w-1 h-1 rounded-full ${dotClass}`}></span>
-                          {badgeText}
-                        </div>
-                        {/* 只有真正 CLOSED 的策略才展示已实现盈亏 */}
+                        <div className="flex flex-col gap-1.5">
+                          <div
+                            className={`text-[10px] px-2 py-0.5 rounded-lg inline-flex items-center gap-1.5 font-black border uppercase ${badgeClass}`}
+                          >
+                            <span className={`w-1 h-1 rounded-full ${dotClass}`}></span>
+                            {badgeText}
+                          </div>
+                          {/* 只有真正 CLOSED 的策略才展示已实现盈亏 */}
                           {displayKind === 'CLOSED' && realizedPnL !== 0 && (
                             <div
                               className={`text-[10px] font-black tracking-tighter ${
