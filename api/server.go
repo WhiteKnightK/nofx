@@ -4477,6 +4477,16 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 			return
 		}
 		log.Printf("✓ [决策查询] trader=%s mode=sltp 返回 %d 条", id, len(decisions))
+
+	case "order":
+		// 所有委托单操作相关决策（set_tp_order, set_sl_order, cancel 等）
+		var orderErr error
+		decisions, orderErr = s.database.GetAllOrderStrategyDecisions(id)
+		if orderErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取委托单决策失败: %v", orderErr)})
+			return
+		}
+		log.Printf("✓ [决策查询] trader=%s mode=order 返回 %d 条", id, len(decisions))
 		
 	default: // "latest"
 		// 最新N条（默认50条）

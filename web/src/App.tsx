@@ -465,8 +465,8 @@ function TraderDetailsPage({
   lastUpdate: string
   language: Language
 }) {
-  // AI 决策筛选状态：latest（最新50条）| open（所有开仓）| close（所有平仓）| sltp（止盈止损）
-  const [decisionFilter, setDecisionFilter] = useState<'latest' | 'open' | 'close' | 'sltp'>('latest')
+  // AI 决策筛选状态：latest（最新50条）| open（所有开仓）| close（所有平仓）| sltp（止盈止损）| order（委托单操作）
+  const [decisionFilter, setDecisionFilter] = useState<'latest' | 'open' | 'close' | 'sltp' | 'order'>('latest')
 
   // 获取决策历史（根据筛选模式动态获取）
   const { data: decisionsData, mutate: mutateDecisions } = useSWR<{
@@ -1063,8 +1063,8 @@ function TraderDetailsPage({
             <span>筛选决策:</span>
             <button
               className={`px-2 py-0.5 rounded border text-xs ${decisionFilter === 'latest'
-                  ? 'border-[#F0B90B] text-[#F0B90B] bg-[#F0B90B]/10'
-                  : 'border-transparent hover:border-[#2B3139]'
+                ? 'border-[#F0B90B] text-[#F0B90B] bg-[#F0B90B]/10'
+                : 'border-transparent hover:border-[#2B3139]'
                 }`}
               onClick={() => setDecisionFilter('latest')}
             >
@@ -1072,8 +1072,8 @@ function TraderDetailsPage({
             </button>
             <button
               className={`px-2 py-0.5 rounded border text-xs ${decisionFilter === 'open'
-                  ? 'border-green-500 text-green-400 bg-green-500/10'
-                  : 'border-transparent hover:border-[#2B3139]'
+                ? 'border-green-500 text-green-400 bg-green-500/10'
+                : 'border-transparent hover:border-[#2B3139]'
                 }`}
               onClick={() => setDecisionFilter('open')}
             >
@@ -1081,8 +1081,8 @@ function TraderDetailsPage({
             </button>
             <button
               className={`px-2 py-0.5 rounded border text-xs ${decisionFilter === 'close'
-                  ? 'border-red-500 text-red-400 bg-red-500/10'
-                  : 'border-transparent hover:border-[#2B3139]'
+                ? 'border-red-500 text-red-400 bg-red-500/10'
+                : 'border-transparent hover:border-[#2B3139]'
                 }`}
               onClick={() => setDecisionFilter('close')}
             >
@@ -1090,12 +1090,21 @@ function TraderDetailsPage({
             </button>
             <button
               className={`px-2 py-0.5 rounded border text-xs ${decisionFilter === 'sltp'
-                  ? 'border-blue-500 text-blue-400 bg-blue-500/10'
-                  : 'border-transparent hover:border-[#2B3139]'
+                ? 'border-blue-500 text-blue-400 bg-blue-500/10'
+                : 'border-transparent hover:border-[#2B3139]'
                 }`}
               onClick={() => setDecisionFilter('sltp')}
             >
               止盈止损
+            </button>
+            <button
+              className={`px-2 py-0.5 rounded border text-xs ${decisionFilter === 'order'
+                ? 'border-purple-500 text-purple-400 bg-purple-500/10'
+                : 'border-transparent hover:border-[#2B3139]'
+                }`}
+              onClick={() => setDecisionFilter('order')}
+            >
+              委托单操作
             </button>
           </div>
 
@@ -1223,17 +1232,17 @@ function TraderDetailsPage({
           );
         })()}
 
+        {/* 📊 当前委托展示（止盈止损等）- 移到策略池和信号库之间 */}
+        <div className="mt-6 mb-6">
+          <OrdersPanel traderId={selectedTrader.trader_id} />
+        </div>
+
         {/* 📊 全量策略信号库 */}
-        <div className="mt-8">
+        <div className="mt-6">
           <ParsedSignalsPanel
             strategyStatuses={strategyStatuses}
           />
         </div>
-      </div>
-
-      {/* 当前委托展示（止盈止损等） */}
-      <div className="mb-6 animate-slide-in" style={{ animationDelay: '0.27s' }}>
-        <OrdersPanel traderId={selectedTrader.trader_id} />
       </div>
 
       {/* 历史策略列表：根据 CLOSED 状态 + 决策历史汇总 */}

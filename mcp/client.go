@@ -291,6 +291,8 @@ func isRetryableError(err error) bool {
 	retryableErrors := []string{
 		"EOF",
 		"timeout",
+		"deadline exceeded",   // context deadline exceeded
+		"context canceled",    // context cancellation
 		"connection reset",
 		"connection refused",
 		"temporary failure",

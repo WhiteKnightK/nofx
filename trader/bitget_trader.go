@@ -625,25 +625,33 @@ func (t *BitgetTrader) CloseShort(symbol string, quantity float64) (map[string]i
 
 // SetLeverage 设置杠杆
 func (t *BitgetTrader) SetLeverage(symbol string, leverage int) error {
-	log.Printf("⚙️ 设置杠杆: %s %dx", symbol, leverage)
+	log.Printf("⚙️ 设置杠杆: %s %dx (多空双向)", symbol, leverage)
 
-	// POST /api/v2/mix/account/set-leverage
-	body := map[string]interface{}{
-		"symbol":      symbol,
-		"productType": "USDT-FUTURES",
-		"marginCoin":  "USDT",
-		"leverage":    strconv.Itoa(leverage),
-		"holdSide":    "long", // 多空共用杠杆
+	// Bitget 需要分别为 long 和 short 设置杠杆
+	for _, holdSide := range []string{"long", "short"} {
+		body := map[string]interface{}{
+			"symbol":      symbol,
+			"productType": "USDT-FUTURES",
+			"marginCoin":  "USDT",
+			"leverage":    strconv.Itoa(leverage),
+			"holdSide":    holdSide,
+		}
+
+		_, err := t.request("POST", "/api/v2/mix/account/set-leverage", nil, body)
+		if err != nil {
+			// 如果错误是"无需变更"，忽略
+			if strings.Contains(err.Error(), "40772") || strings.Contains(err.Error(), "No need") {
+				log.Printf("  ✓ %s 杠杆已是 %dx (%s)", symbol, leverage, holdSide)
+				continue
+			}
+			return fmt.Errorf("set leverage failed (%s): %w", holdSide, err)
+		}
+		log.Printf("  ✓ %s 杠杆设置成功: %dx (%s)", symbol, leverage, holdSide)
 	}
 
-	_, err := t.request("POST", "/api/v2/mix/account/set-leverage", nil, body)
-	if err != nil {
-		return fmt.Errorf("set leverage failed: %w", err)
-	}
-
-	log.Printf("✓ 杠杆设置成功: %s %dx", symbol, leverage)
 	return nil
 }
+
 
 // SetMarginMode 设置仓位模式
 func (t *BitgetTrader) SetMarginMode(symbol string, isCrossMargin bool) error {
@@ -906,6 +914,42 @@ func (t *BitgetTrader) FormatQuantity(symbol string, quantity float64) (string, 
 
 	format := fmt.Sprintf("%%.%df", precision)
 	return fmt.Sprintf(format, quantity), nil
+}
+
+// GetMinTradeNum 获取币种的最小交易数量（用于止盈止损数量校验）
+func (t *BitgetTrader) GetMinTradeNum(symbol string) (float64, error) {
+	// GET /api/v2/mix/market/contracts
+	respBody, err := t.request("GET", "/api/v2/mix/market/contracts", map[string]string{
+		"symbol":      symbol,
+		"productType": "USDT-FUTURES",
+	}, nil)
+	if err != nil {
+		log.Printf("⚠️ 获取最小交易量失败，使用默认值 0.01: %v", err)
+		return 0.01, nil // 默认最小值
+	}
+
+	var response struct {
+		Code string `json:"code"`
+		Data []struct {
+			MinTradeNum string `json:"minTradeNum"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		log.Printf("⚠️ 解析最小交易量失败，使用默认值 0.01: %v", err)
+		return 0.01, nil
+	}
+	if len(response.Data) == 0 {
+		log.Printf("⚠️ 未找到 %s 的合约信息，使用默认最小值 0.01", symbol)
+		return 0.01, nil
+	}
+
+	minNum, err := strconv.ParseFloat(response.Data[0].MinTradeNum, 64)
+	if err != nil || minNum <= 0 {
+		return 0.01, nil
+	}
+
+	log.Printf("📏 %s 最小交易量: %.6f", symbol, minNum)
+	return minNum, nil
 }
 
 // GetOpenOrders 获取当前未成交的委托单（含止盈止损计划单）

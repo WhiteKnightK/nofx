@@ -2539,6 +2539,53 @@ func (d *Database) GetAllSLTPStrategyDecisions(traderID string) ([]*StrategyDeci
 	return histories, nil
 }
 
+// GetAllOrderStrategyDecisions 获取所有委托单操作相关决策（不限制数量，SQL级别过滤）
+// 包含 set_tp_order, set_sl_order, cancel 相关操作
+func (d *Database) GetAllOrderStrategyDecisions(traderID string) ([]*StrategyDecisionHistory, error) {
+	query := `
+		SELECT id, trader_id, strategy_id, decision_time, action, symbol,
+		       current_price, target_price, position_side, position_qty,
+		       amount_percent, reason, rsi_1h, rsi_4h, macd_4h,
+		       system_prompt, input_prompt, raw_ai_response,
+		       execution_success, execution_error
+		FROM strategy_decision_history
+		WHERE trader_id = ?
+		  AND (
+		    UPPER(action) LIKE 'SET_TP_ORDER%'
+		    OR UPPER(action) LIKE 'SET_SL_ORDER%'
+		    OR UPPER(action) LIKE '%CANCEL%ORDER%'
+		    OR UPPER(action) LIKE '%CANCEL%TP%'
+		    OR UPPER(action) LIKE '%CANCEL%SL%'
+		    OR UPPER(action) LIKE '%ORDER%'
+		  )
+		ORDER BY decision_time DESC
+	`
+	
+	rows, err := d.db.Query(query, traderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var histories []*StrategyDecisionHistory
+	for rows.Next() {
+		h := &StrategyDecisionHistory{}
+		err := rows.Scan(
+			&h.ID, &h.TraderID, &h.StrategyID, &h.DecisionTime, &h.Action, &h.Symbol,
+			&h.CurrentPrice, &h.TargetPrice, &h.PositionSide, &h.PositionQty,
+			&h.AmountPercent, &h.Reason, &h.RSI1H, &h.RSI4H, &h.MACD4H,
+			&h.SystemPrompt, &h.InputPrompt, &h.RawAIResponse,
+			&h.ExecutionSuccess, &h.ExecutionError,
+		)
+		if err != nil {
+			return nil, err
+		}
+		histories = append(histories, h)
+	}
+	
+	return histories, nil
+}
+
 // GetStrategyDecisionsByStrategyID 获取特定策略的决策历史
 
 func (d *Database) GetStrategyDecisionsByStrategyID(strategyID string, limit int) ([]*StrategyDecisionHistory, error) {

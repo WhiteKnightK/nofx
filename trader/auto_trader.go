@@ -953,13 +953,13 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// 设置止损止盈
-	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
-		log.Printf("  ⚠ 设置止损失败: %v", err)
+	// 设置止损（止盈由 AI 通过 set_tp_order 独立控制，支持分批止盈）
+	if decision.StopLoss > 0 {
+		if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
+			log.Printf("  ⚠ 设置止损失败: %v", err)
+		}
 	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "LONG", quantity, decision.TakeProfit); err != nil {
-		log.Printf("  ⚠ 设置止盈失败: %v", err)
-	}
+	// 注意: 不再自动设置止盈，改由 AI 发送 set_tp_order 决策分批设置
 
 	return nil
 }
@@ -1045,13 +1045,13 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// 设置止损止盈
-	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
-		log.Printf("  ⚠ 设置止损失败: %v", err)
+	// 设置止损（止盈由 AI 通过 set_tp_order 独立控制，支持分批止盈）
+	if decision.StopLoss > 0 {
+		if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
+			log.Printf("  ⚠ 设置止损失败: %v", err)
+		}
 	}
-	if err := at.trader.SetTakeProfit(decision.Symbol, "SHORT", quantity, decision.TakeProfit); err != nil {
-		log.Printf("  ⚠ 设置止盈失败: %v", err)
-	}
+	// 注意: 不再自动设置止盈，改由 AI 发送 set_tp_order 决策分批设置
 
 	return nil
 }
@@ -1423,6 +1423,23 @@ func (at *AutoTrader) executeSetTPOrderWithRecord(decision *decision.Decision, a
 		closePercent = 100 // 默认全部止盈
 	}
 	quantity := math.Abs(available) * (closePercent / 100)
+
+	// 检查最小交易量（需要 Trader 接口支持 GetMinTradeNum 方法）
+	if minChecker, ok := at.trader.(interface{ GetMinTradeNum(string) (float64, error) }); ok {
+		minNum, _ := minChecker.GetMinTradeNum(decision.Symbol)
+		if quantity < minNum {
+			// 如果计算数量低于最小值，检查是否能使用最小值
+			if math.Abs(available) >= minNum {
+				log.Printf("  ⚠️ 止盈数量 %.6f 低于最小值 %.6f，自动调整为最小值", quantity, minNum)
+				quantity = minNum
+			} else {
+				// 可用数量本身就不足，跳过该止盈单（记录警告）
+				log.Printf("  ⚠️ 可用数量 %.6f 低于最小交易量 %.6f，无法设置止盈单", available, minNum)
+				return fmt.Errorf("仓位太小无法分批止盈，可用: %.6f, 最小: %.6f", available, minNum)
+			}
+		}
+	}
+
 	actionRecord.Quantity = quantity
 
 	// 设置止盈委托
@@ -1492,6 +1509,15 @@ func (at *AutoTrader) executeSetSLOrderWithRecord(decision *decision.Decision, a
 	// 止损全仓
 	quantity := math.Abs(available)
 	actionRecord.Quantity = quantity
+
+	// ⚠️ 先取消已有的止损单，防止重复叠加
+	if canceler, ok := at.trader.(interface{ CancelStopLossOrders(string) error }); ok {
+		log.Printf("  🗑️ 正在取消已有止损单...")
+		if err := canceler.CancelStopLossOrders(decision.Symbol); err != nil {
+			log.Printf("  ⚠️ 取消旧止损单失败（可能不存在）: %v", err)
+			// 不影响继续设置新止损
+		}
+	}
 
 	// 设置止损委托
 	err = at.trader.SetStopLoss(decision.Symbol, positionSide, quantity, decision.SlTriggerPrice)
@@ -2362,6 +2388,10 @@ func convertDecisionToExecution(decisions []decision.Decision, symbol string, in
 		result.Action = "OPEN_LONG"
 	case "open_short":
 		result.Action = "OPEN_SHORT"
+	case "add_long":
+		result.Action = "ADD_LONG"
+	case "add_short":
+		result.Action = "ADD_SHORT"
 	case "close_long":
 		result.Action = "CLOSE_LONG"
 	case "close_short":
@@ -2372,11 +2402,15 @@ func convertDecisionToExecution(decisions []decision.Decision, symbol string, in
 		result.Action = "UPDATE_TAKE_PROFIT"
 	case "partial_close":
 		result.Action = "PARTIAL_CLOSE"
+	case "set_tp_order":
+		result.Action = "SET_TP_ORDER"
+	case "set_sl_order":
+		result.Action = "SET_SL_ORDER"
 	case "hold", "wait", "":
 		result.Action = "WAIT"
 	default:
-		// 未知动作一律降级为 WAIT，避免误触发交易
-		result.Action = "WAIT"
+		// 未知动作保留原始名称（大写），不再降级为 WAIT
+		result.Action = strings.ToUpper(chosen.Action)
 	}
 
 	// 计算资金占比：使用 position_size_usd / initialBalance
