@@ -1023,25 +1023,49 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 	}
 
 	// 2. 获取计划委托单（止盈/止损）
-	// 由于Bitget要求planType必填，且不支持一次查询所有，我们需要分别查询 "profit_plan" (止盈) 和 "loss_plan" (止损)
-	planTypes := []string{"profit_plan", "loss_plan"}
+	// Bitget 文档说明：
+	// ⚠️ 重要：查询 TP/SL 订单应使用 planType="profit_loss"，这会返回所有类型的止盈止损订单
+	// 包括: profit_plan, loss_plan, pos_profit, pos_loss, moving_plan
+	// ⚠️ 重要：Bitget API 查询计划委托时【必须】指定 symbol，不能留空
 
-	for _, pType := range planTypes {
-		planParams := map[string]string{
-			"productType": "USDT-FUTURES",
-			"marginCoin":  "USDT",
-			"planType":    pType, // 分别查询
+	// 确定要查询的交易对列表
+	var symbolsToQuery []string
+	if symbol != "" {
+		symbolsToQuery = []string{symbol}
+	} else {
+		// symbol 为空时，获取所有持仓交易对
+		positions, err := t.GetPositions()
+		if err != nil {
+			log.Printf("⚠️ [委托查询] 获取持仓失败，无法查询计划委托: %v", err)
+		} else {
+			symbolSet := make(map[string]bool)
+			for _, pos := range positions {
+				if sym, ok := pos["symbol"].(string); ok && sym != "" {
+					symbolSet[sym] = true
+				}
+			}
+			for sym := range symbolSet {
+				symbolsToQuery = append(symbolsToQuery, sym)
+			}
+			if len(symbolsToQuery) == 0 {
+				log.Printf("  ℹ️  [委托查询] 没有持仓，跳过计划委托查询")
+			}
 		}
-		// symbol 允许为空，为空时查询该planType下所有交易对
-		if symbol != "" {
-			planParams["symbol"] = symbol
+	}
+
+	// 对每个交易对查询计划委托（使用 profit_loss 一次性获取所有 TP/SL）
+	for _, sym := range symbolsToQuery {
+		planParams := map[string]string{
+			"productType": "usdt-futures",
+			"planType":    "profit_loss", // ⚠️ 使用 profit_loss 查询所有 TP/SL 订单
+			"symbol":      sym,
 		}
 
 		planBody, err := t.request("GET", "/api/v2/mix/order/orders-plan-pending", planParams, nil)
 
 		if err != nil {
 			// 忽略部分错误，继续查询下一个
-			log.Printf("⚠️ [委托查询] 获取计划委托(%s)失败 symbol=%s err=%v", pType, symbol, err)
+			log.Printf("⚠️ [委托查询] 获取计划委托失败 symbol=%s err=%v", sym, err)
 			continue
 		}
 
@@ -1063,28 +1087,30 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 		}
 
 		if err := json.Unmarshal(planBody, &planResp); err != nil {
-			log.Printf("⚠️ [委托查询] 解析计划委托(%s)响应失败: %v", pType, err)
+			log.Printf("⚠️ [委托查询] 解析计划委托响应失败 symbol=%s: %v", sym, err)
+			log.Printf("⚠️ [委托查询] 原始响应: %s", string(planBody))
 			continue
 		}
 
 		if planResp.Code != "00000" {
 			// Code 43025 = 暂无数据，忽略
 			if planResp.Code != "43025" {
-				log.Printf("⚠️ [委托查询] Bitget返回错误(%s) code=%s msg=%s", pType, planResp.Code, planResp.Msg)
+				log.Printf("⚠️ [委托查询] Bitget返回错误 symbol=%s code=%s msg=%s", sym, planResp.Code, planResp.Msg)
+				log.Printf("⚠️ [委托查询] 原始响应: %s", string(planBody))
 			}
 			continue
 		}
 
-		log.Printf("✓ [委托查询] 计划委托(%s): %s 找到 %d 个", pType, symbol, len(planResp.Data.EntrustedList))
+		log.Printf("✓ [委托查询] 计划委托: %s 找到 %d 个", sym, len(planResp.Data.EntrustedList))
 
 		for _, plan := range planResp.Data.EntrustedList {
 			triggerPrice, _ := strconv.ParseFloat(plan.TriggerPrice, 64)
 			quantity, _ := strconv.ParseFloat(plan.Size, 64)
 
 			var orderType string
-			if plan.PlanType == "profit_plan" {
+			if plan.PlanType == "profit_plan" || plan.PlanType == "pos_profit" {
 				orderType = "take_profit"
-			} else if plan.PlanType == "loss_plan" {
+			} else if plan.PlanType == "loss_plan" || plan.PlanType == "pos_loss" {
 				orderType = "stop_loss"
 			} else {
 				orderType = plan.PlanType
