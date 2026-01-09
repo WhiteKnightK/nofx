@@ -285,6 +285,17 @@ func (tm *TraderManager) addTraderFromDB(traderCfg *config.TraderRecord, aiModel
 
 	tm.traders[traderCfg.ID] = at
 	log.Printf("✓ Trader '%s' (%s + %s) 已加载到内存", traderCfg.Name, aiModelCfg.Provider, exchangeCfg.ID)
+
+	// 如果数据库中标记为运行中，则自动启动
+	if traderCfg.IsRunning {
+		go func(name string, t *trader.AutoTrader) {
+			log.Printf("🚀 自动启动 Trader '%s'...", name)
+			if err := t.Run(); err != nil {
+				log.Printf("❌ %s 运行错误: %v", name, err)
+			}
+		}(traderCfg.Name, at)
+	}
+
 	return nil
 }
 
@@ -812,7 +823,6 @@ func (tm *TraderManager) LoadUserTraders(database *config.Database, userID strin
 	for _, traderCfg := range traders {
 		// 检查是否已经加载过这个交易员
 		if _, exists := tm.traders[traderCfg.ID]; exists {
-			log.Printf("⚠️ 交易员 %s 已经加载，跳过", traderCfg.Name)
 			continue
 		}
 

@@ -90,6 +90,7 @@ type Context struct {
 	Performance      interface{}                `json:"-"` // 历史表现分析（logger.PerformanceAnalysis）
 	BTCETHLeverage   int                        `json:"-"` // BTC/ETH杠杆倍数（从配置读取）
 	AltcoinLeverage  int                        `json:"-"` // 山寨币杠杆倍数（从配置读取）
+	LastFailureReason string                    `json:"last_failure_reason,omitempty"` // 上一次失败的原因（用于重试）
 }
 
 // Decision AI的交易决策
@@ -112,6 +113,10 @@ type Decision struct {
 	TpTriggerPrice    float64 `json:"tp_trigger_price,omitempty"`    // 用于 set_tp_order: 止盈触发价格
 	TpClosePercentage float64 `json:"tp_close_percentage,omitempty"` // 用于 set_tp_order: 止盈平仓百分比
 	SlTriggerPrice    float64 `json:"sl_trigger_price,omitempty"`    // 用于 set_sl_order: 止损触发价格
+
+	// 限价单与撤单参数 (新增)
+	Price   float64 `json:"price,omitempty"`    // 用于 place_limit_order
+	OrderID string  `json:"order_id,omitempty"` // 用于 cancel_order (如果AI能提供)
 
 	// 通用参数
 	Confidence int     `json:"confidence,omitempty"` // 信心度 (0-100)
@@ -476,6 +481,14 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 // buildUserPrompt 构建 User Prompt（动态数据）
 func buildUserPrompt(ctx *Context) string {
 	var sb strings.Builder
+
+	// 0. 如果有失败原因，放在最前面提醒AI
+	if ctx.LastFailureReason != "" {
+		sb.WriteString("⚠️ **Last Attempt Failed**\n")
+		sb.WriteString(fmt.Sprintf("Your previous decision or its execution failed with the following error:\n%s\n", ctx.LastFailureReason))
+		sb.WriteString("Please re-evaluate the market and try again, adjusting your parameters if necessary to avoid this error.\n\n")
+		sb.WriteString(strings.Repeat("=", 60) + "\n\n")
+	}
 
 	// 系统状态
 	sb.WriteString(fmt.Sprintf("时间: %s | 周期: #%d | 运行: %d分钟\n\n",
@@ -908,15 +921,22 @@ func findMatchingBracket(s string, start int) int {
 func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int) error {
 	// 验证action
 	validActions := map[string]bool{
-		"open_long":          true,
-		"open_short":         true,
-		"close_long":         true,
-		"close_short":        true,
-		"update_stop_loss":   true,
-		"update_take_profit": true,
-		"partial_close":      true,
-		"hold":               true,
-		"wait":               true,
+		"open_long":                       true,
+		"open_short":                      true,
+		"close_long":                      true,
+		"close_short":                     true,
+		"update_stop_loss":                true,
+		"update_take_profit":              true,
+		"update_stop_loss_and_take_profit": true, // AI 组合动作
+		"partial_close":                   true,
+		"set_tp_order":                    true,
+		"set_sl_order":                    true,
+		"cancel_order":                    true,
+		"place_long_order":                true,
+		"place_short_order":               true,
+		"place_limit_order":               true, // 通用限价单
+		"hold":                            true,
+		"wait":                            true,
 	}
 
 	if !validActions[d.Action] {
@@ -1014,15 +1034,25 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 
 	// 动态调整止损验证
 	if d.Action == "update_stop_loss" {
-		if d.NewStopLoss <= 0 {
-			return fmt.Errorf("新止损价格必须大于0: %.2f", d.NewStopLoss)
+		// AI 可能使用 stop_loss 或 new_stop_loss 字段，兼容两种写法
+		slPrice := d.NewStopLoss
+		if slPrice <= 0 && d.StopLoss > 0 {
+			slPrice = d.StopLoss
+		}
+		if slPrice <= 0 {
+			return fmt.Errorf("新止损价格必须大于0: NewStopLoss=%.2f, StopLoss=%.2f", d.NewStopLoss, d.StopLoss)
 		}
 	}
 
 	// 动态调整止盈验证
 	if d.Action == "update_take_profit" {
-		if d.NewTakeProfit <= 0 {
-			return fmt.Errorf("新止盈价格必须大于0: %.2f", d.NewTakeProfit)
+		// AI 可能使用 take_profit 或 new_take_profit 字段，兼容两种写法
+		tpPrice := d.NewTakeProfit
+		if tpPrice <= 0 && d.TakeProfit > 0 {
+			tpPrice = d.TakeProfit
+		}
+		if tpPrice <= 0 {
+			return fmt.Errorf("新止盈价格必须大于0: NewTakeProfit=%.2f, TakeProfit=%.2f", d.NewTakeProfit, d.TakeProfit)
 		}
 	}
 

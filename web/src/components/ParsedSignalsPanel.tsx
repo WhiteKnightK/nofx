@@ -124,7 +124,7 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
           </div>
           <div>
             <h3 className="text-lg font-bold text-[#EAECEF]">全量策略信号库</h3>
-            <p className="text-[10px] text-[#848E9C] uppercase tracking-wider font-semibold">SIGNAL REPOSITORY (LATEST 100)</p>
+            <p className="text-[10px] text-[#848E9C] uppercase tracking-wider font-semibold">策略信号仓库 (最近 100 条)</p>
           </div>
         </div>
 
@@ -296,10 +296,10 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
                         <div className="flex items-center gap-2">
                           <span className="font-black text-[#EAECEF] tracking-tight">{sig.symbol}</span>
                           <span className={`text-[9px] px-1.5 py-0.5 rounded font-black border uppercase ${isLong
-                              ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
-                              : 'bg-rose-500/10 text-rose-500 border-rose-500/20'
+                            ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+                            : 'bg-rose-500/10 text-rose-500 border-rose-500/20'
                             }`}>
-                            {isLong ? 'Buy Long' : 'Sell Short'}
+                            {isLong ? '做多' : '做空'}
                           </span>
                         </div>
                       </td>
@@ -388,8 +388,8 @@ export function ParsedSignalsPanel({ strategyStatuses }: ParsedSignalsPanelProps
                     key={pageNum}
                     onClick={() => setCurrentPage(pageNum)}
                     className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${currentPage === pageNum
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-[#2B3139] text-[#848E9C] hover:bg-[#3B4149]'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-[#2B3139] text-[#848E9C] hover:bg-[#3B4149]'
                       }`}
                   >
                     {pageNum}

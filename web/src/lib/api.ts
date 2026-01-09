@@ -728,4 +728,22 @@ export const api = {
     if (!res.ok) throw new Error('获取策略决策历史失败')
     return res.json()
   },
+
+  // 获取系统日志
+  async getLogs(params: { limit?: number; level?: string; module?: string; keyword?: string; trader_id?: string }): Promise<{
+    logs: import('../types').LogEntry[];
+    total: number;
+    warning?: string;
+  }> {
+    const query = new URLSearchParams();
+    if (params.limit) query.append('limit', params.limit.toString());
+    if (params.level) query.append('level', params.level);
+    if (params.module) query.append('module', params.module);
+    if (params.keyword) query.append('keyword', params.keyword);
+    if (params.trader_id) query.append('trader_id', params.trader_id);
+    
+    const res = await httpClient.get(`${API_BASE}/logs?${query.toString()}`, getAuthHeaders());
+    if (!res.ok) throw new Error('获取系统日志失败');
+    return res.json();
+  },
 }

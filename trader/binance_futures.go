@@ -908,6 +908,16 @@ func (t *FuturesTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, 
 	return []map[string]interface{}{}, nil
 }
 
+// PlaceLimitOrder 下限价委托开仓单 (Binance Stub)
+func (t *FuturesTrader) PlaceLimitOrder(symbol string, side, tradeSide string, quantity float64, price float64, leverage int) (map[string]interface{}, error) {
+	return nil, fmt.Errorf("PlaceLimitOrder not implemented for Binance Futures yet")
+}
+
+// CancelOrder 取消指定的委托单 (Binance Stub)
+func (t *FuturesTrader) CancelOrder(symbol, orderId string) error {
+	return fmt.Errorf("CancelOrder not implemented for Binance Futures yet")
+}
+
 
 // 辅助函数
 func contains(s, substr string) bool {

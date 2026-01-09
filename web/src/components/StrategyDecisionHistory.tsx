@@ -11,19 +11,38 @@ interface StrategyDecisionHistoryProps {
 // 动作类型分类
 const ACTION_CATEGORIES = {
     all: '全部',
+    wait: '观望',
     open: '开仓类',
     close: '平仓类',
-    sltp: '止盈止损',
-    wait: '观望'
+    limit: '限价委托',
+    cancel: '撤单',
+    sltp: '止盈止损'
 };
 
 // 判断动作属于哪个分类
 const getActionCategory = (action: string): string => {
-    const upperAction = action.toUpperCase();
-    if (upperAction.includes('OPEN') || upperAction.includes('ADD')) return 'open';
-    if (upperAction.includes('CLOSE') || upperAction.includes('PARTIAL')) return 'close';
-    if (upperAction.includes('STOP') || upperAction.includes('TP') || upperAction.includes('SL') || upperAction.includes('PROFIT') || upperAction.includes('LOSS')) return 'sltp';
-    if (upperAction === 'WAIT' || upperAction === 'HOLD') return 'wait';
+    const lowerAction = action.toLowerCase();
+
+    // 观望类
+    if (lowerAction === 'wait' || lowerAction === 'hold') return 'wait';
+
+    // 限价委托类 (place_long_order, place_short_order)
+    if (lowerAction.includes('place_') && lowerAction.includes('_order')) return 'limit';
+
+    // 撤单类
+    if (lowerAction === 'cancel_order' || lowerAction.includes('cancel')) return 'cancel';
+
+    // 开仓类 (open_long, open_short, add_long, add_short)
+    if (lowerAction.includes('open_') || lowerAction.includes('add_')) return 'open';
+
+    // 平仓类 (close_long, close_short, partial_close, emergency_close)
+    if (lowerAction.includes('close') || lowerAction.includes('partial')) return 'close';
+
+    // 止盈止损类 (set_tp_order, set_sl_order, update_stop_loss, update_take_profit)
+    if (lowerAction.includes('tp') || lowerAction.includes('sl') ||
+        lowerAction.includes('stop') || lowerAction.includes('profit') ||
+        lowerAction.includes('loss')) return 'sltp';
+
     return 'all';
 };
 
@@ -57,10 +76,21 @@ export function StrategyDecisionHistory({ traderId }: StrategyDecisionHistoryPro
     }
 
     const getActionColor = (action: string) => {
-        if (action.includes('LONG')) return 'text-green-500 bg-green-500/10 border-green-500/20';
-        if (action.includes('SHORT')) return 'text-red-500 bg-red-500/10 border-red-500/20';
-        if (action === 'WAIT') return 'text-yellow-500 bg-yellow-500/10 border-yellow-500/20';
-        if (action.includes('STOP') || action.includes('TP') || action.includes('SL')) return 'text-blue-500 bg-blue-500/10 border-blue-500/20';
+        const upperAction = action.toUpperCase();
+        // 开多仓类 (green)
+        if (upperAction.includes('LONG') && !upperAction.includes('CLOSE')) return 'text-green-500 bg-green-500/10 border-green-500/20';
+        // 开空仓类 (red)
+        if (upperAction.includes('SHORT') && !upperAction.includes('CLOSE')) return 'text-red-500 bg-red-500/10 border-red-500/20';
+        // 平仓类 (pink/rose)
+        if (upperAction.includes('CLOSE')) return 'text-rose-400 bg-rose-400/10 border-rose-400/20';
+        // 观望 (yellow)
+        if (upperAction === 'WAIT' || upperAction === 'HOLD') return 'text-yellow-500 bg-yellow-500/10 border-yellow-500/20';
+        // 限价委托 (orange)
+        if (upperAction.includes('PLACE_') && upperAction.includes('_ORDER')) return 'text-orange-400 bg-orange-400/10 border-orange-400/20';
+        // 撤单 (purple)
+        if (upperAction.includes('CANCEL')) return 'text-purple-400 bg-purple-400/10 border-purple-400/20';
+        // 止盈止损 (blue)
+        if (upperAction.includes('STOP') || upperAction.includes('TP') || upperAction.includes('SL')) return 'text-blue-500 bg-blue-500/10 border-blue-500/20';
         return 'text-gray-400 bg-gray-500/10 border-gray-500/20';
     };
 

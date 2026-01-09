@@ -35,6 +35,7 @@ type DatabaseInterface interface {
 	CreateExchange(userID, id, name, typ string, enabled bool, apiKey, secretKey string, testnet bool, hyperliquidWalletAddr, asterUser, asterSigner, asterPrivateKey string) error
 	CreateTrader(trader *TraderRecord) error
 	GetTraders(userID string) ([]*TraderRecord, error)
+	GetTraderByID(traderID string) (*TraderRecord, error)
 	UpdateTraderStatus(userID, id string, isRunning bool) error
 	UpdateTrader(trader *TraderRecord) error
 	UpdateTraderInitialBalance(userID, id string, newBalance float64) error
@@ -49,9 +50,20 @@ type DatabaseInterface interface {
 	GetCustomCoins() []string
 	LoadBetaCodesFromFile(filePath string) error
 	ValidateBetaCode(code string) (bool, error)
-	UseBetaCode(code, userEmail string) error
 	GetBetaCodeStats() (total, used int, err error)
 	IsEmailWhitelisted(email string) (bool, error)
+	// Strategy related
+	GetTraderStrategyStatusByStrategyID(traderID, strategyID string) (*TraderStrategyStatus, error)
+	GetTraderStrategyStatuses(traderID string) ([]*TraderStrategyStatus, error)
+	CloseStrategyForTrader(traderID, strategyID string) error
+	UpdateTraderStrategyStatus(status *TraderStrategyStatus) error
+	// Order related
+	CreateStrategyOrder(order *StrategyOrder) error
+	GetStrategyOrders(traderID, strategyID string) ([]*StrategyOrder, error)
+	GetOpenStrategyOrders(traderID string) ([]*StrategyOrder, error)
+	UpdateStrategyOrderStatus(id int, status string) error
+	// Execution Log
+	LogExecutionEvent(traderID, strategyID, action, symbol, reason string, success bool, errInfo string) error
 	Close() error
 }
 
@@ -338,9 +350,37 @@ func (d *Database) createTables(isMySQL bool) error {
 			return "INTEGER"
 		}(), autoIncrementType, textType, textType, datetimeFunc, textType, textType, textType, textType, boolType, textType),
 
+
 		// 为策略决策历史表创建索引
 		`CREATE INDEX IF NOT EXISTS idx_strategy_decision_trader ON strategy_decision_history(trader_id, decision_time DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_strategy_decision_strategy ON strategy_decision_history(strategy_id, decision_time DESC)`,
+
+		// 【新增】策略委托单记录表
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS strategy_orders (
+			id %s PRIMARY KEY %s,
+			trader_id %s NOT NULL,
+			strategy_id %s NOT NULL,
+			symbol %s NOT NULL,
+			order_id %s NOT NULL,
+			client_oid %s DEFAULT '',
+			order_type %s NOT NULL,
+			side %s NOT NULL,
+			price REAL NOT NULL,
+			quantity REAL NOT NULL,
+			leverage INTEGER DEFAULT 0,
+			status %s DEFAULT 'new',
+			created_at DATETIME DEFAULT %s,
+			updated_at DATETIME DEFAULT %s,
+			UNIQUE(trader_id, strategy_id, order_id)
+		)`, func() string {
+			if isMySQL {
+				return "BIGINT" // MySQL使用BIGINT
+			}
+			return "INTEGER" // SQLite使用INTEGER
+		}(), autoIncrementType, textType, textType, textType, textType, textType, textType, textType, textType, datetimeFunc, datetimeFunc),
+
+		// 为策略委托单表创建索引
+		`CREATE INDEX IF NOT EXISTS idx_strategy_orders_lookup ON strategy_orders(trader_id, strategy_id)`,
 
 		// 【新增】全量解析信号记录表 (持久化所有邮件解析结果)
 		`CREATE TABLE IF NOT EXISTS parsed_signals (
@@ -712,6 +752,24 @@ type TraderRecord struct {
 	OwnerUserID          string    `json:"owner_user_id"`          // 创建该交易员的用户ID
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+// StrategyOrder 策略委托单记录
+type StrategyOrder struct {
+	ID         int       `json:"id"`
+	TraderID   string    `json:"trader_id"`
+	StrategyID string    `json:"strategy_id"`
+	Symbol     string    `json:"symbol"`
+	OrderID    string    `json:"order_id"`
+	ClientOid  string    `json:"client_oid"` // 客户端自定义ID
+	OrderType  string    `json:"order_type"` // 'entry', 'add_1', 'add_2', 'limit_entry', 'sl', 'tp'
+	Side       string    `json:"side"`       // 'long', 'short'
+	Price      float64   `json:"price"`
+	Quantity   float64   `json:"quantity"`
+	Leverage   int       `json:"leverage"`
+	Status     string    `json:"status"` // 'new', 'filled', 'cancelled'
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // UserSignalSource 用户信号源配置
@@ -2369,6 +2427,26 @@ func (d *Database) SaveStrategyDecision(history *StrategyDecisionHistory) error 
 	return err
 }
 
+// LogExecutionEvent 记录执行事件到决策历史表
+func (d *Database) LogExecutionEvent(traderID, strategyID, action, symbol, reason string, success bool, errInfo string) error {
+	log.Printf("📝 [DB] LogExecutionEvent: trader=%s, action=%s, symbol=%s, success=%v", traderID, action, symbol, success)
+	
+	query := `
+		INSERT INTO strategy_decision_history (
+			trader_id, strategy_id, decision_time, action, symbol,
+			reason, execution_success, execution_error
+		) VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+	`
+	_, err := d.db.Exec(query,
+		traderID, strategyID, action, symbol,
+		reason, success, errInfo,
+	)
+	if err != nil {
+		log.Printf("❌ [DB] LogExecutionEvent 失败: %v", err)
+	}
+	return err
+}
+
 // GetStrategyDecisionHistory 获取策略决策历史(按时间倒序,支持分页)
 func (d *Database) GetStrategyDecisionHistory(traderID string, limit int) ([]*StrategyDecisionHistory, error) {
 	if limit <= 0 {
@@ -2645,3 +2723,56 @@ func (d *Database) IsEmailWhitelisted(email string) (bool, error) {
 	
 	return count > 0, nil
 }
+
+// CreateStrategyOrder 创建策略委托单记录
+func (d *Database) CreateStrategyOrder(order *StrategyOrder) error {
+	query := `
+		INSERT INTO strategy_orders (
+			trader_id, strategy_id, symbol, order_id, client_oid, 
+			order_type, side, price, quantity, leverage, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	_, err := d.db.Exec(query, 
+		order.TraderID, order.StrategyID, order.Symbol, order.OrderID, order.ClientOid,
+		order.OrderType, order.Side, order.Price, order.Quantity, order.Leverage, order.Status)
+	return err
+}
+
+// GetStrategyOrders 获取指定策略的委托单记录
+func (d *Database) GetStrategyOrders(traderID, strategyID string) ([]*StrategyOrder, error) {
+	query := `
+		SELECT id, trader_id, strategy_id, symbol, order_id, client_oid, 
+		       order_type, side, price, quantity, leverage, status, created_at, updated_at
+		FROM strategy_orders
+		WHERE trader_id = ? AND strategy_id = ?
+		ORDER BY created_at ASC
+	`
+	
+	rows, err := d.db.Query(query, traderID, strategyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var orders []*StrategyOrder
+	for rows.Next() {
+		order := &StrategyOrder{}
+		err := rows.Scan(
+			&order.ID, &order.TraderID, &order.StrategyID, &order.Symbol, &order.OrderID, &order.ClientOid,
+			&order.OrderType, &order.Side, &order.Price, &order.Quantity, &order.Leverage, &order.Status, &order.CreatedAt, &order.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+	return orders, nil
+}
+
+// UpdateStrategyOrderStatus 更新策略订单状态
+func (d *Database) UpdateStrategyOrderStatus(id int, status string) error {
+	query := "UPDATE strategy_orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+	_, err := d.db.Exec(query, status, id)
+	return err
+}
+

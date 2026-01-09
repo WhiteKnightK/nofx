@@ -21,6 +21,14 @@ type Trader interface {
 	// CloseShort 平空仓（quantity=0表示全部平仓）
 	CloseShort(symbol string, quantity float64) (map[string]interface{}, error)
 
+	// PlaceLimitOrder 下限价委托开仓单
+	// side: "buy"(做多) | "sell"(做空)
+	// tradeSide: "open"(开仓) | "close"(平仓)
+	PlaceLimitOrder(symbol string, side, tradeSide string, quantity float64, price float64, leverage int) (map[string]interface{}, error)
+
+	// CancelOrder 取消指定的委托单
+	CancelOrder(symbol, orderId string) error
+
 	// SetLeverage 设置杠杆
 	SetLeverage(symbol string, leverage int) error
 

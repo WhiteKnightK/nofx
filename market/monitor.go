@@ -15,8 +15,9 @@ type WSMonitor struct {
 	symbols        []string
 	featuresMap    sync.Map
 	alertsChan     chan Alert
-	klineDataMap3m sync.Map // 存储每个交易对的K线历史数据
-	klineDataMap4h sync.Map // 存储每个交易对的K线历史数据
+	klineDataMap3m sync.Map // 存储每个交易对的5m K线
+	klineDataMap1h sync.Map // 存储每个交易对的1h K线
+	klineDataMap4h sync.Map // 存储每个交易对的4h K线
 	tickerDataMap  sync.Map // 存储每个交易对的ticker数据
 	batchSize      int
 	filterSymbols  sync.Map // 使用sync.Map来存储需要监控的币种和其状态
@@ -32,7 +33,7 @@ type SymbolStats struct {
 }
 
 var WSMonitorCli *WSMonitor
-var subKlineTime = []string{"5m", "4h"} // 管理订阅流的K线周期（与系统5m一致）
+var subKlineTime = []string{"5m", "1h", "4h"} // 管理订阅流的K线周期
 
 func NewWSMonitor(batchSize int) *WSMonitor {
 	WSMonitorCli = &WSMonitor{
@@ -89,23 +90,23 @@ func (m *WSMonitor) initializeHistoricalData() error {
 			defer wg.Done()
 			defer func() { <-semaphore }()
 
-			// 获取历史K线数据
-			klines, err := apiClient.GetKlines(s, "5m", 100)
-			if err != nil {
-				log.Printf("获取 %s 历史数据失败: %v", s, err)
-				return
+			// 获取 5m 历史 K 线
+			klines5m, err := apiClient.GetKlines(s, "5m", 200)
+			if err == nil && len(klines5m) > 0 {
+				m.klineDataMap3m.Store(s, klines5m)
+				log.Printf("已加载 %s 的历史K线数据-5m: %d 条", s, len(klines5m))
 			}
-			if len(klines) > 0 {
-				m.klineDataMap3m.Store(s, klines)
-				log.Printf("已加载 %s 的历史K线数据-5m: %d 条", s, len(klines))
+
+			// 获取 1h 历史 K 线
+			klines1h, err := apiClient.GetKlines(s, "1h", 200)
+			if err == nil && len(klines1h) > 0 {
+				m.klineDataMap1h.Store(s, klines1h)
+				log.Printf("已加载 %s 的历史K线数据-1h: %d 条", s, len(klines1h))
 			}
-			// 获取历史K线数据
-			klines4h, err := apiClient.GetKlines(s, "4h", 100)
-			if err != nil {
-				log.Printf("获取 %s 历史数据失败: %v", s, err)
-				return
-			}
-			if len(klines4h) > 0 {
+
+			// 获取 4h 历史 K 线
+			klines4h, err := apiClient.GetKlines(s, "4h", 200)
+			if err == nil && len(klines4h) > 0 {
 				m.klineDataMap4h.Store(s, klines4h)
 				log.Printf("已加载 %s 的历史K线数据-4h: %d 条", s, len(klines4h))
 			}
@@ -182,6 +183,8 @@ func (m *WSMonitor) getKlineDataMap(_time string) *sync.Map {
 	var klineDataMap *sync.Map
 	if _time == "5m" {
 		klineDataMap = &m.klineDataMap3m
+	} else if _time == "1h" {
+		klineDataMap = &m.klineDataMap1h
 	} else if _time == "4h" {
 		klineDataMap = &m.klineDataMap4h
 	} else {
@@ -221,7 +224,8 @@ func (m *WSMonitor) processKlineUpdate(symbol string, wsData KlineWSData, _time 
 			klines = append(klines, kline)
 
 			// 保持数据长度
-			if len(klines) > 100 {
+			// 保持数据长度，留出计算 EMA 的空间
+			if len(klines) > 300 {
 				klines = klines[1:]
 			}
 		}
@@ -238,7 +242,7 @@ func (m *WSMonitor) GetCurrentKlines(symbol string, _time string) ([]Kline, erro
 	if !exists {
 		// 如果Ws数据未初始化完成时,单独使用api获取 - 兼容性代码 (防止在未初始化完成是,已经有交易员运行)
 		apiClient := NewAPIClient()
-		klines, err := apiClient.GetKlines(symbol, _time, 100)
+		klines, err := apiClient.GetKlines(symbol, _time, 200)
 		if err != nil {
 			return nil, fmt.Errorf("获取%v分钟K线失败: %v", _time, err)
 		}
@@ -285,7 +289,7 @@ func (m *WSMonitor) GetCurrentKlines(symbol string, _time string) ([]Kline, erro
 			log.Printf("⚠️  %s %s K线已过期(上次收盘: %s，超出TTL: %v)，使用API刷新并重订阅",
 				symbol, _time, lastClose.Format(time.RFC3339), ttl)
 			apiClient := NewAPIClient()
-			refreshed, err := apiClient.GetKlines(symbol, _time, 100)
+			refreshed, err := apiClient.GetKlines(symbol, _time, 200)
 			if err == nil && len(refreshed) > 0 {
 				m.getKlineDataMap(_time).Store(strings.ToUpper(symbol), refreshed)
 				klines = refreshed

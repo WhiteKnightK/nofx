@@ -11,6 +11,7 @@ import (
 	"nofx/manager"
 	"nofx/market"
 	"nofx/mcp"
+	"nofx/pkg/logger"
 	"nofx/pool"
 	mysignal "nofx/signal"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"syscall"
 
 	"github.com/joho/godotenv"
+	"go.uber.org/zap"
 )
 
 // ConfigFile 配置文件结构，只包含需要同步到数据库的字段
@@ -44,7 +46,7 @@ type ConfigFile struct {
 func loadConfigFile() (*ConfigFile, error) {
 	// 检查config.json是否存在
 	if _, err := os.Stat("config.json"); os.IsNotExist(err) {
-		log.Printf("📄 config.json不存在，使用默认配置")
+		logger.Info("📄 config.json不存在，使用默认配置")
 		return &ConfigFile{}, nil
 	}
 
@@ -69,7 +71,7 @@ func syncConfigToDatabase(database *config.Database, configFile *ConfigFile) err
 		return nil
 	}
 
-	log.Printf("🔄 开始同步config.json到数据库...")
+	logger.Info("🔄 开始同步config.json到数据库...")
 
 	// 同步各配置项到数据库
 	configs := map[string]string{
@@ -107,13 +109,13 @@ func syncConfigToDatabase(database *config.Database, configFile *ConfigFile) err
 	// 更新数据库配置
 	for key, value := range configs {
 		if err := database.SetSystemConfig(key, value); err != nil {
-			log.Printf("⚠️  更新配置 %s 失败: %v", key, err)
+			logger.Warn("⚠️  更新配置失败", zap.String("key", key), zap.Error(err))
 		} else {
-			log.Printf("✓ 同步配置: %s = %s", key, value)
+			logger.Info("✓ 同步配置", zap.String("key", key), zap.String("value", value))
 		}
 	}
 
-	log.Printf("✅ config.json同步完成")
+	logger.Info("✅ config.json同步完成")
 	return nil
 }
 
@@ -123,7 +125,7 @@ func loadBetaCodesToDatabase(database *config.Database) error {
 
 	// 检查内测码文件是否存在
 	if _, err := os.Stat(betaCodeFile); os.IsNotExist(err) {
-		log.Printf("📄 内测码文件 %s 不存在，跳过加载", betaCodeFile)
+		logger.Info("📄 内测码文件不存在，跳过加载", zap.String("file", betaCodeFile))
 		return nil
 	}
 
@@ -133,7 +135,9 @@ func loadBetaCodesToDatabase(database *config.Database) error {
 		return fmt.Errorf("获取内测码文件信息失败: %w", err)
 	}
 
-	log.Printf("🔄 发现内测码文件 %s (%.1f KB)，开始加载...", betaCodeFile, float64(fileInfo.Size())/1024)
+	logger.Info("🔄 发现内测码文件，开始加载...", 
+		zap.String("file", betaCodeFile), 
+		zap.Float64("size_kb", float64(fileInfo.Size())/1024))
 
 	// 加载内测码到数据库
 	err = database.LoadBetaCodesFromFile(betaCodeFile)
@@ -144,15 +148,21 @@ func loadBetaCodesToDatabase(database *config.Database) error {
 	// 显示统计信息
 	total, used, err := database.GetBetaCodeStats()
 	if err != nil {
-		log.Printf("⚠️  获取内测码统计失败: %v", err)
+		logger.Warn("⚠️  获取内测码统计失败", zap.Error(err))
 	} else {
-		log.Printf("✅ 内测码加载完成: 总计 %d 个，已使用 %d 个，剩余 %d 个", total, used, total-used)
+		logger.Info("✅ 内测码加载完成", 
+			zap.Int64("total", int64(total)), 
+			zap.Int64("used", int64(used)), 
+			zap.Int64("remaining", int64(total-used)))
 	}
 
 	return nil
 }
 
 func main() {
+	// 初始化日志系统
+	logger.InitLogger("logs", true) // 默认开启 debug 模式，以后可以根据 flag 或 env 调整
+	
 	fmt.Println("╔════════════════════════════════════════════════════════════╗")
 	fmt.Println("║    🤖 AI多模型交易系统 - 支持 DeepSeek & Qwen            ║")
 	fmt.Println("╚════════════════════════════════════════════════════════════╝")
@@ -165,7 +175,7 @@ func main() {
 	// 读取配置文件
 	configFile, err := loadConfigFile()
 	if err != nil {
-		log.Fatalf("❌ 读取config.json失败: %v", err)
+		logger.Log.Fatal("❌ 读取config.json失败", zap.Error(err))
 	}
 
 	// 初始化数据库配置 - 优先使用MySQL
@@ -444,7 +454,7 @@ func main() {
 	}
 
 	// 创建并启动API服务器
-	apiServer := api.NewServer(traderManager, database, cryptoService, apiPort)
+	apiServer := api.NewServer(traderManager, database, cryptoService, globalMCP, apiPort)
 	go func() {
 		if err := apiServer.Start(); err != nil {
 			log.Printf("❌ API服务器错误: %v", err)

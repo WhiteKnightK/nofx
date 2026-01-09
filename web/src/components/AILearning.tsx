@@ -564,8 +564,8 @@ export default function AILearning({ traderId }: AILearningProps) {
               >
                 {(performance.profit_factor || 0) >= 2.0 &&
                   '🔥 盈利能力出色！每亏1元能赚' +
-                    (performance.profit_factor || 0).toFixed(1) +
-                    '元，AI策略表现优异。'}
+                  (performance.profit_factor || 0).toFixed(1) +
+                  '元，AI策略表现优异。'}
                 {(performance.profit_factor || 0) >= 1.5 &&
                   (performance.profit_factor || 0) < 2.0 &&
                   '✓ 策略稳定盈利，盈亏比健康，继续保持纪律性交易。'}
@@ -714,31 +714,31 @@ export default function AILearning({ traderId }: AILearningProps) {
                       className="text-left px-4 py-3 text-xs font-semibold"
                       style={{ color: '#94A3B8' }}
                     >
-                      Symbol
+                      币种
                     </th>
                     <th
                       className="text-right px-4 py-3 text-xs font-semibold"
                       style={{ color: '#94A3B8' }}
                     >
-                      Trades
+                      交易数
                     </th>
                     <th
                       className="text-right px-4 py-3 text-xs font-semibold"
                       style={{ color: '#94A3B8' }}
                     >
-                      Win Rate
+                      胜率
                     </th>
                     <th
                       className="text-right px-4 py-3 text-xs font-semibold"
                       style={{ color: '#94A3B8' }}
                     >
-                      Total P&L (USDT)
+                      累计盈亏 (USDT)
                     </th>
                     <th
                       className="text-right px-4 py-3 text-xs font-semibold"
                       style={{ color: '#94A3B8' }}
                     >
-                      Avg P&L (USDT)
+                      平均盈亏 (USDT)
                     </th>
                   </tr>
                 </thead>
@@ -830,10 +830,10 @@ export default function AILearning({ traderId }: AILearningProps) {
                 </h3>
                 <p className="text-xs" style={{ color: '#94A3B8' }}>
                   {performance?.recent_trades &&
-                  performance.recent_trades.length > 0
+                    performance.recent_trades.length > 0
                     ? t('completedTrades', language, {
-                        count: performance.recent_trades.length,
-                      })
+                      count: performance.recent_trades.length,
+                    })
                     : t('completedTradesWillAppear', language)}
                 </p>
               </div>
@@ -845,7 +845,7 @@ export default function AILearning({ traderId }: AILearningProps) {
             style={{ maxHeight: 'calc(100vh - 280px)' }}
           >
             {performance?.recent_trades &&
-            performance.recent_trades.length > 0 ? (
+              performance.recent_trades.length > 0 ? (
               performance.recent_trades.map(
                 (trade: TradeOutcome, idx: number) => {
                   const isProfitable = trade.pn_l >= 0

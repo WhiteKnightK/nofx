@@ -1,18 +1,22 @@
 package api
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
 	"net/http"
+	"nofx/analysis"
 	"nofx/auth"
 	"nofx/config"
 	"nofx/crypto"
 	"nofx/decision"
 	"nofx/manager"
 	"nofx/market"
+	"nofx/mcp"
 	"nofx/signal"
 	"nofx/trader"
 	"os"
@@ -30,11 +34,12 @@ type Server struct {
 	traderManager *manager.TraderManager
 	database      *config.Database
 	cryptoService *crypto.CryptoService
+	mcpClient     *mcp.Client
 	port          int
 }
 
 // NewServer 创建API服务器
-func NewServer(traderManager *manager.TraderManager, database *config.Database, cryptoService *crypto.CryptoService, port int) *Server {
+func NewServer(traderManager *manager.TraderManager, database *config.Database, cryptoService *crypto.CryptoService, mcpClient *mcp.Client, port int) *Server {
 	// 设置为Release模式（减少日志输出）
 	gin.SetMode(gin.ReleaseMode)
 
@@ -48,6 +53,7 @@ func NewServer(traderManager *manager.TraderManager, database *config.Database, 
 		traderManager: traderManager,
 		database:      database,
 		cryptoService: cryptoService,
+		mcpClient:     mcpClient,
 		port:          port,
 	}
 
@@ -146,7 +152,7 @@ func (s *Server) setupRoutes() {
 			protected.GET("/traders/:id/account", s.handleGetTraderAccount)
 			protected.GET("/traders/:id/strategy-status", s.handleGetTraderStrategyStatus)
 			protected.GET("/traders/:id/strategy-statuses", s.handleGetTraderStrategyStatuses) // 新增：获取所有策略状态
-		protected.GET("/traders/:id/strategy-decisions", s.handleGetStrategyDecisions)
+			protected.GET("/traders/:id/strategy-decisions", s.handleGetStrategyDecisions)
 			protected.DELETE("/traders/:id/account", s.handleDeleteTraderAccount)
 			protected.POST("/traders/:id/category", s.handleSetTraderCategory)
 
@@ -180,27 +186,128 @@ func (s *Server) setupRoutes() {
 			protected.GET("/user/signal-sources", s.handleGetUserSignalSource)
 			protected.POST("/user/signal-sources", s.handleSaveUserSignalSource)
 
-		// 用户账户信息
-		protected.GET("/user/account", s.handleUserAccount)
+			// 用户账户信息
+			protected.GET("/user/account", s.handleUserAccount)
 
-		// 指定trader的数据（使用query参数 ?trader_id=xxx）
-		protected.GET("/status", s.handleStatus)
-		protected.GET("/account", s.handleAccount)
-		protected.GET("/positions", s.handlePositions)
-		protected.POST("/positions/close", s.handleClosePosition) // 平仓操作
-		protected.GET("/orders", s.handleGetOrders)              // 委托列表（止盈止损）
-		protected.GET("/decisions", s.handleDecisions)
-		protected.GET("/decisions/latest", s.handleLatestDecisions)
-		protected.GET("/strategy/active", s.handleGetActiveStrategy)     // 获取当前全局策略
-		protected.GET("/strategy/active-list", s.handleGetActiveStrategies) // 新增：获取所有活跃全局策略
-		protected.GET("/strategy/signals", s.handleGetParsedSignals)        // 新增：获取全量解析信号历史
-		// 实时提示词预览（每次请求现算，不读缓存）
-		// protected.GET("/traders/:id/prompt-preview", s.handlePromptPreview)
-		protected.GET("/statistics", s.handleStatistics)
-		protected.GET("/equity-history", s.handleEquityHistory) // 需要认证，使用当前登录用户做权限校验
-		protected.GET("/performance", s.handlePerformance)
+			// 指定trader的数据（使用query参数 ?trader_id=xxx）
+			protected.GET("/status", s.handleStatus)
+			protected.GET("/account", s.handleAccount)
+			protected.GET("/positions", s.handlePositions)
+			protected.POST("/positions/close", s.handleClosePosition) // 平仓操作
+			protected.GET("/orders", s.handleGetOrders)               // 委托列表（止盈止损）
+			protected.GET("/decisions", s.handleDecisions)
+			protected.GET("/decisions/latest", s.handleLatestDecisions)
+			protected.GET("/strategy/active", s.handleGetActiveStrategy)        // 获取当前全局策略
+			protected.GET("/strategy/active-list", s.handleGetActiveStrategies) // 新增：获取所有活跃全局策略
+			protected.GET("/strategy/signals", s.handleGetParsedSignals)        // 新增：获取全量解析信号历史
+			// 实时提示词预览（每次请求现算，不读缓存）
+			// protected.GET("/traders/:id/prompt-preview", s.handlePromptPreview)
+			protected.GET("/statistics", s.handleStatistics)
+			protected.GET("/equity-history", s.handleEquityHistory) // 需要认证，使用当前登录用户做权限校验
+			
+			// 系统日志
+			protected.GET("/logs", s.handleGetLogs)
+		}
+
+		// 公开的分析报告 API
+		api.GET("/analysis/report", s.handleGetAnalysisReport)
+		api.GET("/analysis/report/stream", s.handleGetAnalysisReportStream)
+
+		// 占位符: 修复 /api/performance 404 错误
+		api.GET("/performance", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "Performance API placeholder"})
+		})
 	}
 }
+
+// LogEntry 日志条目结构 (Zap JSON Format)
+type LogEntry struct {
+	Level      string  `json:"level"`
+	Time       string  `json:"ts"`
+	Caller     string  `json:"caller"`
+	Message    string  `json:"msg"`
+	Module     string  `json:"module,omitempty"`
+	TraderID   string  `json:"trader_id,omitempty"`
+	Symbol     string  `json:"symbol,omitempty"`
+	Stacktrace string  `json:"stacktrace,omitempty"`
+}
+
+// handleGetLogs 获取系统日志
+func (s *Server) handleGetLogs(c *gin.Context) {
+	// 参数解析
+	limitStr := c.DefaultQuery("limit", "200")
+	limit, _ := strconv.Atoi(limitStr)
+	if limit > 2000 {
+		limit = 2000
+	}
+
+	levelFilter := strings.ToUpper(c.Query("level")) // INFO, WARN, ERROR, DEBUG
+	moduleFilter := c.Query("module")
+	traderIDFilter := c.Query("trader_id")
+	keyword := strings.ToLower(c.Query("keyword"))
+
+	// 读取日志文件 (logs/app.json)
+	logFile := "logs/app.json"
+	file, err := os.Open(logFile)
+	if err != nil {
+		// 尝试读取 logs/app.json 失败，可能目录不对，或者文件不存在
+		c.JSON(http.StatusOK, gin.H{"logs": []LogEntry{}, "total": 0, "warning": "Log file not found"})
+		return
+	}
+	defer file.Close()
+
+	var logs []LogEntry
+	scanner := bufio.NewScanner(file)
+	// 增加 buffer size 以防单行日志过长 (1MB)
+	const maxCapacity = 1024 * 1024
+	buf := make([]byte, maxCapacity)
+	scanner.Buffer(buf, maxCapacity)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		
+		// 快速过滤：如果设置了关键字且行中不包含，直接跳过 (性能优化)
+		/* 注意：这是不严谨的，因为JSON结构中可能包含关键字但不在message中，
+		   但为了性能，可以在unmarshal前做一次bytes级别的检查 */
+		if keyword != "" && !bytes.Contains(bytes.ToLower(line), []byte(keyword)) {
+			continue
+		}
+
+		var entry LogEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+
+		// 结构化字段过滤
+		if levelFilter != "" && strings.ToUpper(entry.Level) != levelFilter {
+			continue
+		}
+		if moduleFilter != "" && entry.Module != moduleFilter {
+			continue
+		}
+		if traderIDFilter != "" && entry.TraderID != traderIDFilter {
+			continue
+		}
+
+		logs = append(logs, entry)
+	}
+
+	// 取最后 limit 条，并反转（最新的在前）
+	total := len(logs)
+	start := total - limit
+	if start < 0 {
+		start = 0
+	}
+
+	result := make([]LogEntry, 0, limit)
+	for i := total - 1; i >= start; i-- {
+		result = append(result, logs[i])
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"logs":  result,
+		"total": total,
+	})
 }
 
 // handleHealth 健康检查
@@ -612,7 +719,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取交易所配置失败: %v", err)})
 		return
 	}
-	
+
 	var exchangeProvider string
 	var exchangeCfg *config.ExchangeConfig
 	for _, exchange := range exchanges {
@@ -636,12 +743,12 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 			break
 		}
 	}
-	
+
 	if exchangeCfg == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("交易所配置不存在: %s", req.ExchangeID)})
 		return
 	}
-	
+
 	if !exchangeCfg.Enabled {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "交易所未启用"})
 		return
@@ -905,8 +1012,8 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 				s.traderManager.RemoveTrader(traderID)
 
 				// 3. 重新加载配置到内存
-	err = s.traderManager.LoadUserTraders(s.database, userID)
-	if err != nil {
+				err = s.traderManager.LoadUserTraders(s.database, userID)
+				if err != nil {
 					log.Printf("❌ 重启 Trader 失败: %v", err)
 				} else {
 					// 4. 按照当前 is_running 状态重新启动该 Trader
@@ -1006,7 +1113,7 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 func (s *Server) handleStartTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
-	
+
 	// 🔍 调试：记录完整的请求信息
 	log.Printf("🔍 [handleStartTrader] 请求详情:")
 	log.Printf("  - URL路径: %s", c.Request.URL.Path)
@@ -1039,7 +1146,7 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
 		return
 	}
-	
+
 	log.Printf("✅ [handleStartTrader] 找到交易员: ID=%s, ExchangeID=%s, AIModelID=%s", traderRecord.ID, traderRecord.ExchangeID, traderRecord.AIModelID)
 
 	// 权限检查：如果不是admin，验证交易员是否属于当前用户
@@ -2054,7 +2161,6 @@ func (s *Server) handleGetOrders(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"orders": orders})
 }
-
 
 // handleClosePosition 平仓操作
 func (s *Server) handleClosePosition(c *gin.Context) {
@@ -4434,8 +4540,8 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 
 		// 允许：创建者、本体 user_id、绑定的 trader_account 用户
 		if userID != ownerID && userID != trader.UserID && userID != trader.TraderAccountID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该交易员"})
-		return
+			c.JSON(http.StatusForbidden, gin.H{"error": "无权访问该交易员"})
+			return
 		}
 	}
 
@@ -4457,7 +4563,7 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 			return
 		}
 		log.Printf("✓ [决策查询] trader=%s mode=open 返回 %d 条", id, len(decisions))
-		
+
 	case "close":
 		// 所有平仓决策（SQL级别过滤，不限制数量）
 		var closeErr error
@@ -4487,7 +4593,7 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 			return
 		}
 		log.Printf("✓ [决策查询] trader=%s mode=order 返回 %d 条", id, len(decisions))
-		
+
 	default: // "latest"
 		// 最新N条（默认50条）
 		limit := 50
@@ -4505,7 +4611,6 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 		log.Printf("✓ [决策查询] trader=%s mode=latest limit=%d 返回 %d 条", id, limit, len(decisions))
 	}
 
-
 	// 如果没有记录，返回空数组
 	if decisions == nil {
 		decisions = []*config.StrategyDecisionHistory{}
@@ -4516,4 +4621,67 @@ func (s *Server) handleGetStrategyDecisions(c *gin.Context) {
 		"total":     len(decisions),
 		"mode":      mode,
 	})
+}
+
+// handleGetAnalysisReport 生成日内趋势技术分析报告
+func (s *Server) handleGetAnalysisReport(c *gin.Context) {
+	symbol := c.Query("symbol")
+	if symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
+		return
+	}
+
+	if s.mcpClient == nil {
+		log.Printf("❌ AI 分析错误: mcpClient 未初始化")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI 服务未初始化"})
+		return
+	}
+
+	report, err := analysis.GenerateTrendReport(symbol, s.mcpClient)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, report)
+}
+
+// handleGetAnalysisReportStream 流式生成日内趋势技术分析报告
+func (s *Server) handleGetAnalysisReportStream(c *gin.Context) {
+	symbol := c.Query("symbol")
+	if symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
+		return
+	}
+
+	if s.mcpClient == nil {
+		log.Printf("❌ AI 分析错误: mcpClient 未初始化 (Stream)")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI 服务未初始化"})
+		return
+	}
+
+	log.Printf("🚀 开始为 %s 生成流式分析报告", symbol)
+
+	// 设置响应头以支持 SSE
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("Transfer-Encoding", "chunked")
+
+	// 使用流式输出
+	err := analysis.StreamGenerateTrendReport(symbol, s.mcpClient, func(chunk string) {
+		// 将 chunk 包装在 JSON 中以保留换行符和空格
+		c.SSEvent("message", gin.H{"content": chunk})
+		c.Writer.Flush()
+	})
+
+	if err != nil {
+		log.Printf("❌ 流式生成报告失败 (%s): %v", symbol, err)
+		c.SSEvent("error", gin.H{"error": err.Error()})
+		c.Writer.Flush()
+	} else {
+		log.Printf("✅ 流式生成报告完成 (%s)", symbol)
+		c.SSEvent("end", gin.H{"status": "done"})
+		c.Writer.Flush()
+	}
 }

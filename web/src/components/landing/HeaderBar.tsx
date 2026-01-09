@@ -259,6 +259,42 @@ export default function HeaderBar({
 
                     {t('dashboardNav', language)}
                   </button>
+
+                  <button
+                    onClick={() => onPageChange?.('analysis')}
+                    className="text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500"
+                    style={{
+                      color:
+                        currentPage === 'analysis'
+                          ? 'var(--brand-yellow)'
+                          : 'var(--brand-light-gray)',
+                      padding: '8px 16px',
+                      borderRadius: '8px',
+                      position: 'relative',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (currentPage !== 'analysis') {
+                        e.currentTarget.style.color = 'var(--brand-yellow)'
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (currentPage !== 'analysis') {
+                        e.currentTarget.style.color = 'var(--brand-light-gray)'
+                      }
+                    }}
+                  >
+                    {/* Background for selected state */}
+                    {currentPage === 'analysis' && (
+                      <span
+                        className="absolute inset-0 rounded-lg"
+                        style={{
+                          background: 'rgba(240, 185, 11, 0.15)',
+                          zIndex: -1,
+                        }}
+                      />
+                    )}
+                    📈 分析
+                  </button>
                 </>
               ) : (
                 // Landing page navigation when not logged in
@@ -299,6 +335,42 @@ export default function HeaderBar({
 
                     {t('realtimeNav', language)}
                   </a>
+
+                  <button
+                    onClick={() => onPageChange?.('analysis')}
+                    className="text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500"
+                    style={{
+                      color:
+                        currentPage === 'analysis'
+                          ? 'var(--brand-yellow)'
+                          : 'var(--brand-light-gray)',
+                      padding: '8px 16px',
+                      borderRadius: '8px',
+                      position: 'relative',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (currentPage !== 'analysis') {
+                        e.currentTarget.style.color = 'var(--brand-yellow)'
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (currentPage !== 'analysis') {
+                        e.currentTarget.style.color = 'var(--brand-light-gray)'
+                      }
+                    }}
+                  >
+                    {/* Background for selected state */}
+                    {currentPage === 'analysis' && (
+                      <span
+                        className="absolute inset-0 rounded-lg"
+                        style={{
+                          background: 'rgba(240, 185, 11, 0.15)',
+                          zIndex: -1,
+                        }}
+                      />
+                    )}
+                    📊 行情分析
+                  </button>
                 </>
               )}
             </div>
@@ -338,8 +410,8 @@ export default function HeaderBar({
                         border: '1px solid var(--panel-border)',
                       }}
                       onMouseEnter={(e) =>
-                        (e.currentTarget.style.background =
-                          'rgba(255, 255, 255, 0.05)')
+                      (e.currentTarget.style.background =
+                        'rgba(255, 255, 255, 0.05)')
                       }
                       onMouseLeave={(e) =>
                         (e.currentTarget.style.background = 'var(--panel-bg)')
@@ -443,8 +515,8 @@ export default function HeaderBar({
                   className="flex items-center gap-2 px-3 py-2 rounded transition-colors"
                   style={{ color: 'var(--brand-light-gray)' }}
                   onMouseEnter={(e) =>
-                    (e.currentTarget.style.background =
-                      'rgba(255, 255, 255, 0.05)')
+                  (e.currentTarget.style.background =
+                    'rgba(255, 255, 255, 0.05)')
                   }
                   onMouseLeave={(e) =>
                     (e.currentTarget.style.background = 'transparent')
@@ -469,9 +541,8 @@ export default function HeaderBar({
                         onLanguageChange?.('zh')
                         setLanguageDropdownOpen(false)
                       }}
-                      className={`w-full flex items-center gap-2 px-3 py-2 transition-colors ${
-                        language === 'zh' ? '' : 'hover:opacity-80'
-                      }`}
+                      className={`w-full flex items-center gap-2 px-3 py-2 transition-colors ${language === 'zh' ? '' : 'hover:opacity-80'
+                        }`}
                       style={{
                         color: 'var(--brand-light-gray)',
                         background:
@@ -488,9 +559,8 @@ export default function HeaderBar({
                         onLanguageChange?.('en')
                         setLanguageDropdownOpen(false)
                       }}
-                      className={`w-full flex items-center gap-2 px-3 py-2 transition-colors ${
-                        language === 'en' ? '' : 'hover:opacity-80'
-                      }`}
+                      className={`w-full flex items-center gap-2 px-3 py-2 transition-colors ${language === 'en' ? '' : 'hover:opacity-80'
+                        }`}
                       style={{
                         color: 'var(--brand-light-gray)',
                         background:
@@ -605,6 +675,40 @@ export default function HeaderBar({
               {t('realtimeNav', language)}
             </a>
           )}
+
+          {/* 行情分析 - 无需登录即可访问 */}
+          <button
+            onClick={() => {
+              onPageChange?.('analysis')
+              setMobileMenuOpen(false)
+            }}
+            className="block text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500"
+            style={{
+              color:
+                currentPage === 'analysis'
+                  ? 'var(--brand-yellow)'
+                  : 'var(--brand-light-gray)',
+              padding: '12px 16px',
+              borderRadius: '8px',
+              position: 'relative',
+              width: '100%',
+              textAlign: 'left',
+            }}
+          >
+            {/* Background for selected state */}
+            {currentPage === 'analysis' && (
+              <span
+                className="absolute inset-0 rounded-lg"
+                style={{
+                  background: 'rgba(240, 185, 11, 0.15)',
+                  zIndex: -1,
+                }}
+              />
+            )}
+
+            📊 行情分析
+          </button>
+
           {/* Only show 配置 and 看板 when logged in */}
           {isLoggedIn && (
             <>
@@ -753,11 +857,10 @@ export default function HeaderBar({
                   onLanguageChange?.('zh')
                   setMobileMenuOpen(false)
                 }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded transition-colors ${
-                  language === 'zh'
-                    ? 'bg-yellow-500 text-black'
-                    : 'text-gray-400 hover:text-white'
-                }`}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded transition-colors ${language === 'zh'
+                  ? 'bg-yellow-500 text-black'
+                  : 'text-gray-400 hover:text-white'
+                  }`}
               >
                 <span className="text-lg">🇨🇳</span>
                 <span className="text-sm">中文</span>
@@ -767,11 +870,10 @@ export default function HeaderBar({
                   onLanguageChange?.('en')
                   setMobileMenuOpen(false)
                 }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded transition-colors ${
-                  language === 'en'
-                    ? 'bg-yellow-500 text-black'
-                    : 'text-gray-400 hover:text-white'
-                }`}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded transition-colors ${language === 'en'
+                  ? 'bg-yellow-500 text-black'
+                  : 'text-gray-400 hover:text-white'
+                  }`}
               >
                 <span className="text-lg">🇺🇸</span>
                 <span className="text-sm">English</span>

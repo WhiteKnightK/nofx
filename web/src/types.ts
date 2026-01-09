@@ -252,3 +252,14 @@ export interface StrategyDecisionHistory {
   execution_success: boolean
   execution_error: string
 }
+
+export interface LogEntry {
+  level: string
+  ts: string
+  caller: string
+  msg: string
+  module?: string
+  trader_id?: string
+  symbol?: string
+  stacktrace?: string
+}

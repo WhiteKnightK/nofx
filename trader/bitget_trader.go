@@ -447,6 +447,104 @@ func (t *BitgetTrader) OpenShort(symbol string, quantity float64, leverage int) 
 	return result, nil
 }
 
+// PlaceLimitOrder 下限价委托开仓单
+// side: "buy"(做多) | "sell"(做空)
+// tradeSide: "open"(开仓) | "close"(平仓)
+func (t *BitgetTrader) PlaceLimitOrder(symbol string, side, tradeSide string, quantity float64, price float64, leverage int) (map[string]interface{}, error) {
+	log.Printf("⏱️ 下限价委托: %s %s %s 数量: %.4f 价格: %.4f 杠杆: %dx",
+		symbol, side, tradeSide, quantity, price, leverage)
+
+	// 1. 设置杠杆 (仅开仓时需要)
+	if tradeSide == "open" && leverage > 0 {
+		if err := t.SetLeverage(symbol, leverage); err != nil {
+			// 仅记录警告，不阻塞下单
+			log.Printf("  ⚠️ 设置杠杆失败: %v", err)
+		}
+	}
+
+	// 2. 格式化参数
+	quantityStr, err := t.FormatQuantity(symbol, quantity)
+	if err != nil {
+		return nil, err
+	}
+
+	priceStr := strconv.FormatFloat(price, 'f', -1, 64)
+	if strings.Contains(priceStr, "e") {
+		// 避免科学计数法
+		priceStr = strconv.FormatFloat(price, 'f', 8, 64)
+		priceStr = strings.TrimRight(priceStr, "0")
+		priceStr = strings.TrimRight(priceStr, ".")
+	}
+
+	// 3. 构建请求体
+	body := map[string]interface{}{
+		"symbol":      symbol,
+		"productType": "USDT-FUTURES",
+		"marginMode":  "crossed", // 默认全仓
+		"marginCoin":  "USDT",
+		"side":        side,      // buy/sell
+		"tradeSide":   tradeSide, // open/close
+		"orderType":   "limit",   // 限价单
+		"price":       priceStr,  // 委托价格
+		"size":        quantityStr,
+		"force":       "gtc",    // 普通限价单 (GTC)
+	}
+
+	// 4. 发送请求
+	respBody, err := t.request("POST", "/api/v2/mix/order/place-order", nil, body)
+	if err != nil {
+		return nil, fmt.Errorf("place limit order failed: %w", err)
+	}
+
+	// 5. 解析响应
+	var response struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			OrderId   string `json:"orderId"`
+			ClientOid string `json:"clientOid"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		return nil, fmt.Errorf("parse response failed: %w", err)
+	}
+
+	log.Printf("✓ 限价委托成功: %s (ID: %s)", symbol, response.Data.OrderId)
+
+	result := make(map[string]interface{})
+	result["orderId"] = response.Data.OrderId
+	result["clientOid"] = response.Data.ClientOid
+	result["symbol"] = symbol
+	result["status"] = "NEW"
+
+	return result, nil
+}
+
+// CancelOrder 取消指定的委托单
+func (t *BitgetTrader) CancelOrder(symbol, orderId string) error {
+	log.Printf("🗑️ 取消订单: %s (ID: %s)", symbol, orderId)
+
+	body := map[string]interface{}{
+		"symbol":      symbol,
+		"productType": "USDT-FUTURES",
+		"orderId":     orderId,
+	}
+
+	_, err := t.request("POST", "/api/v2/mix/order/cancel-order", nil, body)
+	if err != nil {
+		// 如果订单已不存在或已成交，API可能会报错，根据错误码判断是否忽略
+		if strings.Contains(err.Error(), "order not exist") || strings.Contains(err.Error(), "40019") {
+			log.Printf("  ⚠️ 订单已不存在或已取消: %s", orderId)
+			return nil
+		}
+		return fmt.Errorf("cancel order failed: %w", err)
+	}
+
+	log.Printf("✓ 订单取消成功: %s", orderId)
+	return nil
+}
+
 // CloseLong 平多仓（使用 Bitget 官方一键平仓接口）
 // 参考文档：https://www.bitget.com/zh-CN/api-doc/contract/trade/Flash-Close-Position
 func (t *BitgetTrader) CloseLong(symbol string, quantity float64) (map[string]interface{}, error) {
@@ -835,6 +933,38 @@ func (t *BitgetTrader) cancelPlanOrders(symbol string, planType string) error {
 	return nil
 }
 
+// CancelPlanOrder 取消指定的计划委托单（止盈/止损）
+// 参考文档: https://www.bitget.com/api-doc/contract/plan/Cancel-Plan-Order
+// 注意: Bitget API 使用 orderIdList 数组格式，每项需包含 orderId 或 clientOid
+func (t *BitgetTrader) CancelPlanOrder(symbol, orderId, planType string) error {
+	log.Printf("🗑️ 取消计划单: %s (ID: %s, Type: %s)", symbol, orderId, planType)
+
+	// POST /api/v2/mix/order/cancel-plan-order
+	// orderIdList 是一个数组，每个元素包含 orderId
+	orderIdList := []map[string]string{
+		{"orderId": orderId},
+	}
+
+	body := map[string]interface{}{
+		"symbol":      symbol,
+		"productType": "USDT-FUTURES",
+		"marginCoin":  "USDT",
+		"orderIdList": orderIdList,
+	}
+
+	_, err := t.request("POST", "/api/v2/mix/order/cancel-plan-order", nil, body)
+	if err != nil {
+		if strings.Contains(err.Error(), "43025") || strings.Contains(err.Error(), "order not exist") || strings.Contains(err.Error(), "40019") {
+			log.Printf("  ⚠️ 计划单已不存在: %s", orderId)
+			return nil
+		}
+		return fmt.Errorf("cancel plan order failed: %w", err)
+	}
+
+	log.Printf("✓ 计划单取消成功: %s", orderId)
+	return nil
+}
+
 // CancelAllOrders 取消该币种的所有限价/市价委托单（不含计划单）
 func (t *BitgetTrader) CancelAllOrders(symbol string) error {
 	// POST /api/v2/mix/order/cancel-all-orders
@@ -855,6 +985,12 @@ func (t *BitgetTrader) CancelAllOrders(symbol string) error {
 	}
 
 	log.Printf("  ✓ 已取消 %s 的所有普通委托单", symbol)
+	
+	// 6. 失效余额缓存，确保存款被释放后能立即获取最新余额
+	t.balanceCacheMutex.Lock()
+	t.balanceCacheTime = time.Time{}
+	t.balanceCacheMutex.Unlock()
+	
 	return nil
 }
 

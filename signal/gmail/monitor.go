@@ -192,7 +192,7 @@ func (m *Monitor) CheckEmails() error {
 			targetUids.AddNum(msg.Uid)
 			totalTargetCount++
 			uidToEnvelope[msg.Uid] = msg.Envelope
-			log.Printf("🎯 发现目标邮件(待下载): [%s] <%s> %s (白名单: %v)", fromName, fromEmail, subject, isWhitelisted)
+			
 		}
 	}
 
@@ -241,8 +241,6 @@ func (m *Monitor) CheckEmails() error {
 		m.mu.Lock()
 		if m.processedCache[messageID] {
 			m.mu.Unlock()
-			log.Printf("⏭ 跳过重复邮件 [%d/%d]: %s (接收时间: %s, ID: %s)",
-				processedCount, totalTargetCount, envelope.Subject, envelope.Date.Format(time.RFC3339), messageID)
 			continue
 		}
 		m.mu.Unlock()

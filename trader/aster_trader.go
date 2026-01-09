@@ -1237,3 +1237,13 @@ func (t *AsterTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, er
 	return []map[string]interface{}{}, nil
 }
 
+// PlaceLimitOrder 下限价委托开仓单 (Aster Stub)
+func (t *AsterTrader) PlaceLimitOrder(symbol string, side, tradeSide string, quantity float64, price float64, leverage int) (map[string]interface{}, error) {
+	return nil, fmt.Errorf("PlaceLimitOrder not implemented for Aster yet")
+}
+
+// CancelOrder 取消指定的委托单 (Aster Stub)
+func (t *AsterTrader) CancelOrder(symbol, orderId string) error {
+	return fmt.Errorf("CancelOrder not implemented for Aster yet")
+}
+

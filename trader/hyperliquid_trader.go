@@ -870,3 +870,13 @@ func absFloat(x float64) float64 {
 	}
 	return x
 }
+
+// PlaceLimitOrder 下限价委托开仓单 (Hyperliquid Stub)
+func (t *HyperliquidTrader) PlaceLimitOrder(symbol string, side, tradeSide string, quantity float64, price float64, leverage int) (map[string]interface{}, error) {
+	return nil, fmt.Errorf("PlaceLimitOrder not implemented for Hyperliquid yet")
+}
+
+// CancelOrder 取消指定的委托单 (Hyperliquid Stub)
+func (t *HyperliquidTrader) CancelOrder(symbol, orderId string) error {
+	return fmt.Errorf("CancelOrder not implemented for Hyperliquid yet")
+}

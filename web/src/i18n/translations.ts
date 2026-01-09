@@ -609,7 +609,7 @@ export const translations = {
       'Yes! NOFX supports running multiple traders with different configurations, AI models, and trading strategies.',
 
     // Contributing & Community - REMOVED
-    
+
     // Setup & Configuration
     faqSystemRequirements: 'What are the system requirements?',
     faqSystemRequirementsAnswer:
@@ -770,9 +770,9 @@ export const translations = {
   },
   zh: {
     // Header
-    appTitle: 'AI Trading',
-    subtitle: '多AI模型交易平台',
-    aiTraders: 'AI交易员',
+    appTitle: 'NOFX 智能交易',
+    subtitle: '多 AI 模型量化交易平台',
+    aiTraders: 'AI 交易员',
     details: '详情',
     tradingPanel: '交易面板',
     competition: '竞赛',
@@ -977,8 +977,8 @@ export const translations = {
       '重要提示：Aster 仅统计 USDT 余额。请确保您使用 USDT 作为保证金币种，避免其他资产（BNB、ETH等）的价格波动导致盈亏统计错误',
 
     // Exchange names
-    hyperliquidExchangeName: 'Hyperliquid',
-    asterExchangeName: 'Aster DEX',
+    hyperliquidExchangeName: 'Hyperliquid 交易所',
+    asterExchangeName: 'Aster 交易所',
 
     // Secure input
     secureInputButton: '安全输入',
@@ -1435,9 +1435,9 @@ export const translations = {
     faqOnlyShortAnswer:
       '默认系统提示词包含"不要有做多偏见！做空是你的核心工具之一"，可能导致此问题。还受 4 小时周期数据和模型训练偏向性影响。您可以修改系统提示词使其更平衡。',
 
-    faqModelSelection: '应该使用哪个 DeepSeek 版本？',
-    faqModelSelectionAnswer:
-      '推荐使用 DeepSeek V3 以获得最佳性能。备选：DeepSeek R1（推理模型，较慢但逻辑更好）、SiliconFlow 的 DeepSeek（备用 API 提供商）。大多数用户反馈 V3 效果良好。',
+    modelSelection: '该选择哪个 DeepSeek 版本？',
+    modelSelectionAnswer:
+      '推荐使用 DeepSeek V3 以获得最佳性能。备选：DeepSeek R1（深度思考模型，逻辑更好但响应较慢）、SiliconFlow 的 DeepSeek 镜像。大多数用户反馈 V3 效果极其稳定。',
 
     // Data & Privacy
     faqDataStorage: '我的数据存储在哪里？',

@@ -10,6 +10,7 @@ import { ResetPasswordPage } from './components/ResetPasswordPage'
 import { CompetitionPage } from './components/CompetitionPage'
 import { LandingPage } from './pages/LandingPage'
 import { FAQPage } from './pages/FAQPage'
+import MarketAnalysisPage from './pages/MarketAnalysisPage'
 import HeaderBar from './components/landing/HeaderBar'
 import AILearning from './components/AILearning'
 import { TraderExecutionCard } from './components/TraderExecutionCard'
@@ -30,7 +31,7 @@ import type {
   StrategyDecisionHistory,
 } from './types'
 
-type Page = 'competition' | 'traders' | 'trader' | 'categories'
+type Page = 'competition' | 'traders' | 'trader' | 'categories' | 'analysis'
 
 // 获取友好的AI模型名称
 function getModelDisplayName(modelId: string): string {
@@ -57,6 +58,7 @@ function App() {
     const path = window.location.pathname
     const hash = window.location.hash.slice(1) // 去掉 #
 
+    if (path === '/analysis') return 'analysis'
     if (path === '/traders' || hash === 'traders') return 'traders'
     if (path === '/categories' || hash === 'categories') return 'categories'
     if (path === '/dashboard' || hash === 'trader' || hash === 'details')
@@ -81,7 +83,9 @@ function App() {
       const path = window.location.pathname
       const hash = window.location.hash.slice(1)
 
-      if (path === '/traders' || hash === 'traders') {
+      if (path === '/analysis') {
+        setCurrentPage('analysis')
+      } else if (path === '/traders' || hash === 'traders') {
         setCurrentPage('traders')
       } else if (path === '/categories' || hash === 'categories') {
         setCurrentPage('categories')
@@ -271,6 +275,48 @@ function App() {
   if (route === '/reset-password') {
     return <ResetPasswordPage />
   }
+  if (route === '/analysis') {
+    return (
+      <div
+        className="min-h-screen"
+        style={{ background: '#0B0E11', color: '#EAECEF' }}
+      >
+        <HeaderBar
+          isLoggedIn={!!user}
+          currentPage="analysis"
+          language={language}
+          onLanguageChange={setLanguage}
+          user={user}
+          onLogout={logout}
+          onPageChange={(page) => {
+            if (page === 'competition') {
+              window.history.pushState({}, '', '/competition')
+              setRoute('/competition')
+              setCurrentPage('competition')
+            } else if (page === 'traders') {
+              window.history.pushState({}, '', '/traders')
+              setRoute('/traders')
+              setCurrentPage('traders')
+            } else if (page === 'trader') {
+              window.history.pushState({}, '', '/dashboard')
+              setRoute('/dashboard')
+              setCurrentPage('trader')
+            } else if (page === 'analysis') {
+              window.history.pushState({}, '', '/analysis')
+              setRoute('/analysis')
+              setCurrentPage('analysis')
+            } else if (page === 'faq') {
+              window.history.pushState({}, '', '/faq')
+              setRoute('/faq')
+            }
+          }}
+        />
+        <main className="pt-20">
+          <MarketAnalysisPage />
+        </main>
+      </div>
+    )
+  }
   if (route === '/competition') {
     return (
       <div
@@ -303,6 +349,11 @@ function App() {
               window.history.pushState({}, '', '/dashboard')
               setRoute('/dashboard')
               setCurrentPage('trader')
+            } else if (page === 'analysis') {
+              console.log('Navigating to analysis')
+              window.history.pushState({}, '', '/analysis')
+              setRoute('/analysis')
+              setCurrentPage('analysis')
             } else if (page === 'faq') {
               console.log('Navigating to faq')
               window.history.pushState({}, '', '/faq')
@@ -366,6 +417,10 @@ function App() {
             window.history.pushState({}, '', '/dashboard')
             setRoute('/dashboard')
             setCurrentPage('trader')
+          } else if (page === 'analysis') {
+            window.history.pushState({}, '', '/analysis')
+            setRoute('/analysis')
+            setCurrentPage('analysis')
           } else if (page === 'faq') {
             window.history.pushState({}, '', '/faq')
             setRoute('/faq')

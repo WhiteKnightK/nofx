@@ -171,6 +171,110 @@ func (client *Client) CallWithMessages(systemPrompt, userPrompt string) (string,
 	return "", fmt.Errorf("重试%d次后仍然失败: %w", maxRetries, lastErr)
 }
 
+// StreamWithMessages 使用流式输出调用AI API
+func (client *Client) StreamWithMessages(systemPrompt, userPrompt string, onChunk func(string)) error {
+	if client.APIKey == "" {
+		return fmt.Errorf("AI API密钥未设置")
+	}
+
+	// 构建 messages 数组
+	messages := []map[string]string{}
+	if systemPrompt != "" {
+		messages = append(messages, map[string]string{"role": "system", "content": systemPrompt})
+	}
+	messages = append(messages, map[string]string{"role": "user", "content": userPrompt})
+
+	// 构建请求体
+	requestBody := map[string]interface{}{
+		"model":       client.Model,
+		"messages":    messages,
+		"temperature": 0.5,
+		"max_tokens":  client.MaxTokens,
+		"stream":      true,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("%s/chat/completions", client.BaseURL)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", client.APIKey))
+
+	httpClient := &http.Client{Timeout: client.Timeout}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API返回错误 (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	reader := io.ReadCloser(resp.Body)
+	buffer := make([]byte, 4096)
+	var leftovers string
+
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 {
+			raw := leftovers + string(buffer[:n])
+			lines := strings.Split(raw, "\n")
+			
+			// 最后一项可能是不完整的，留到下次处理
+			leftovers = lines[len(lines)-1]
+			
+			for i := 0; i < len(lines)-1; i++ {
+				line := strings.TrimSpace(lines[i])
+				if line == "" {
+					continue
+				}
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				
+				data := strings.TrimPrefix(line, "data: ")
+				if data == "[DONE]" {
+					return nil
+				}
+				
+				var chunk struct {
+					Choices []struct {
+						Delta struct {
+							Content string `json:"content"`
+						} `json:"delta"`
+					} `json:"choices"`
+				}
+				
+				if err := json.Unmarshal([]byte(data), &chunk); err == nil {
+					if len(chunk.Choices) > 0 {
+						content := chunk.Choices[0].Delta.Content
+						if content != "" {
+							onChunk(content)
+						}
+					}
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+	}
+
+	return nil
+}
+
 // callOnce 单次调用AI API（内部使用）
 func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) {
 	// 打印当前 AI 配置
