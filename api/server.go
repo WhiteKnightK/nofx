@@ -2320,6 +2320,7 @@ func (s *Server) handleEquityHistory(c *gin.Context) {
 
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {
+		log.Printf("❌ handleEquityHistory: 获取交易员失败 - trader_id=%s, error=%v", traderID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
@@ -2328,19 +2329,23 @@ func (s *Server) handleEquityHistory(c *gin.Context) {
 	// 每3分钟一个周期：10000条 = 约20天的数据
 	records, err := trader.GetDecisionLogger().GetLatestRecords(10000)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": fmt.Sprintf("获取历史数据失败: %v", err),
-		})
+		log.Printf("❌ handleEquityHistory: 读取决策日志失败 - trader_id=%s, error=%v", traderID, err)
+		// 如果读取失败，返回空数组而不是错误，避免前端显示错误
+		c.JSON(http.StatusOK, []interface{}{})
 		return
 	}
 
-	// 构建收益率历史数据点
+	log.Printf("📊 handleEquityHistory: 找到 %d 条历史记录 - trader_id=%s", len(records), traderID)
+
+	// 构建收益率历史数据点（字段名与前端期望一致）
 	type EquityPoint struct {
 		Timestamp        string  `json:"timestamp"`
 		TotalEquity      float64 `json:"total_equity"`      // 账户净值（wallet + unrealized）
 		AvailableBalance float64 `json:"available_balance"` // 可用余额
-		TotalPnL         float64 `json:"total_pnl"`         // 总盈亏（相对初始余额）
-		TotalPnLPct      float64 `json:"total_pnl_pct"`     // 总盈亏百分比
+		PnL              float64 `json:"pnl"`              // 总盈亏（相对初始余额）- 与前端期望一致
+		PnLPct           float64 `json:"pnl_pct"`           // 总盈亏百分比 - 与前端期望一致
+		TotalPnL         float64 `json:"total_pnl"`         // 兼容旧字段名
+		TotalPnLPct      float64 `json:"total_pnl_pct"`     // 兼容旧字段名
 		PositionCount    int     `json:"position_count"`    // 持仓数量
 		MarginUsedPct    float64 `json:"margin_used_pct"`   // 保证金使用率
 		CycleNumber      int     `json:"cycle_number"`
@@ -2360,12 +2365,20 @@ func (s *Server) handleEquityHistory(c *gin.Context) {
 		initialBalance = records[0].AccountState.TotalBalance
 	}
 
-	// 如果还是无法获取，返回错误
-	if initialBalance == 0 {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "无法获取初始余额",
-		})
+	// 如果没有记录且无法获取初始余额，返回空数组
+	if len(records) == 0 {
+		log.Printf("⚠️ handleEquityHistory: 没有历史记录 - trader_id=%s", traderID)
+		c.JSON(http.StatusOK, []interface{}{})
 		return
+	}
+
+	// 如果还是无法获取初始余额，使用第一条记录的equity作为初始余额
+	if initialBalance == 0 {
+		log.Printf("⚠️ handleEquityHistory: 无法获取初始余额，使用第一条记录的equity - trader_id=%s", traderID)
+		initialBalance = records[0].AccountState.TotalBalance
+		if initialBalance == 0 {
+			initialBalance = 1000 // 默认值，避免除零错误
+		}
 	}
 
 	var history []EquityPoint
@@ -2385,14 +2398,17 @@ func (s *Server) handleEquityHistory(c *gin.Context) {
 			Timestamp:        record.Timestamp.Format("2006-01-02 15:04:05"),
 			TotalEquity:      totalEquity,
 			AvailableBalance: record.AccountState.AvailableBalance,
-			TotalPnL:         totalPnL,
-			TotalPnLPct:      totalPnLPct,
+			PnL:              totalPnL,    // 新字段名，与前端期望一致
+			PnLPct:           totalPnLPct, // 新字段名，与前端期望一致
+			TotalPnL:         totalPnL,    // 兼容旧字段名
+			TotalPnLPct:      totalPnLPct, // 兼容旧字段名
 			PositionCount:    record.AccountState.PositionCount,
 			MarginUsedPct:    record.AccountState.MarginUsedPct,
 			CycleNumber:      record.CycleNumber,
 		})
 	}
 
+	log.Printf("✅ handleEquityHistory: 返回 %d 条历史数据点 - trader_id=%s", len(history), traderID)
 	c.JSON(http.StatusOK, history)
 }
 

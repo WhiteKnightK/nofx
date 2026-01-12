@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -1007,7 +1009,7 @@ func (t *BitgetTrader) CancelStopOrders(symbol string) error {
 	return nil
 }
 
-// FormatQuantity 格式化数量到正确的精度
+// FormatQuantity 格式化数量到正确的精度，并对齐到步长的整数倍
 func (t *BitgetTrader) FormatQuantity(symbol string, quantity float64) (string, error) {
 	// GET /api/v2/mix/market/contracts
 	respBody, err := t.request("GET", "/api/v2/mix/market/contracts", map[string]string{
@@ -1015,9 +1017,15 @@ func (t *BitgetTrader) FormatQuantity(symbol string, quantity float64) (string, 
 		"productType": "USDT-FUTURES",
 	}, nil)
 	if err != nil {
-		// 如果获取失败，使用默认精度
-		log.Printf("⚠️ 获取交易规则失败，使用默认精度: %v", err)
-		return fmt.Sprintf("%.4f", quantity), nil
+		// 如果获取失败，使用默认步长 0.001（适用于大多数主流币）
+		log.Printf("⚠️ 获取交易规则失败，使用默认步长0.001: %v", err)
+		step := 0.001
+		minTrade := 0.001
+		rounded := math.Floor(quantity/step) * step
+		if rounded < minTrade {
+			rounded = minTrade
+		}
+		return fmt.Sprintf("%.3f", rounded), nil
 	}
 
 	var response struct {
@@ -1025,31 +1033,69 @@ func (t *BitgetTrader) FormatQuantity(symbol string, quantity float64) (string, 
 		Msg  string `json:"msg"`
 		Data []struct {
 			Symbol         string `json:"symbol"`
-			SizeMultiplier string `json:"sizeMultiplier"` // 数量精度
+			SizeMultiplier string `json:"sizeMultiplier"` // 数量步长
 			MinTradeNum    string `json:"minTradeNum"`    // 最小下单数量
 		} `json:"data"`
 	}
 
 	if err := json.Unmarshal(respBody, &response); err != nil {
-		log.Printf("⚠️ 解析交易规则失败，使用默认精度: %v", err)
-		return fmt.Sprintf("%.4f", quantity), nil
+		log.Printf("⚠️ 解析交易规则失败，使用默认步长0.001: %v", err)
+		step := 0.001
+		minTrade := 0.001
+		rounded := math.Floor(quantity/step) * step
+		if rounded < minTrade {
+			rounded = minTrade
+		}
+		return fmt.Sprintf("%.3f", rounded), nil
 	}
 
 	if len(response.Data) == 0 {
-		log.Printf("⚠️ 未找到 %s 的交易规则，使用默认精度", symbol)
-		return fmt.Sprintf("%.4f", quantity), nil
+		log.Printf("⚠️ 未找到 %s 的交易规则，使用默认步长0.001", symbol)
+		step := 0.001
+		minTrade := 0.001
+		rounded := math.Floor(quantity/step) * step
+		if rounded < minTrade {
+			rounded = minTrade
+		}
+		return fmt.Sprintf("%.3f", rounded), nil
 	}
 
-	// 计算精度
-	sizeMultiplier := response.Data[0].SizeMultiplier
+	// 解析步长和最小交易量
+	sizeMultiplierStr := response.Data[0].SizeMultiplier
+	minTradeNumStr := response.Data[0].MinTradeNum
+
+	step, err := strconv.ParseFloat(sizeMultiplierStr, 64)
+	if err != nil || step <= 0 {
+		log.Printf("⚠️ 解析 sizeMultiplier 失败 (%s)，使用默认步长0.001", sizeMultiplierStr)
+		step = 0.001
+	}
+
+	minTrade, err := strconv.ParseFloat(minTradeNumStr, 64)
+	if err != nil || minTrade <= 0 {
+		minTrade = step // 如果没有最小交易量，使用步长作为最小值
+	}
+
+	// 舍入到步长的整数倍（向下取整，避免超出保证金）
+	rounded := math.Floor(quantity/step) * step
+
+	// 如果舍入后小于最小交易量，使用最小交易量
+	if rounded < minTrade {
+		log.Printf("⚠️ [FormatQuantity] %s: 舍入后 %.8f < 最小交易量 %s，使用最小交易量", symbol, rounded, minTradeNumStr)
+		rounded = minTrade
+	}
+
+	// 计算小数位数
 	precision := 0
-	if strings.Contains(sizeMultiplier, ".") {
-		parts := strings.Split(sizeMultiplier, ".")
+	if strings.Contains(sizeMultiplierStr, ".") {
+		parts := strings.Split(sizeMultiplierStr, ".")
 		precision = len(parts[1])
 	}
 
 	format := fmt.Sprintf("%%.%df", precision)
-	return fmt.Sprintf(format, quantity), nil
+	result := fmt.Sprintf(format, rounded)
+	
+	log.Printf("✓ [FormatQuantity] %s: 原始=%.8f 步长=%s 最小=%s 舍入后=%s", symbol, quantity, sizeMultiplierStr, minTradeNumStr, result)
+	return result, nil
 }
 
 // GetMinTradeNum 获取币种的最小交易数量（用于止盈止损数量校验）
@@ -1270,4 +1316,284 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 
 	log.Printf("✓ 获取委托单成功: %s 共 %d 个", symbol, len(result))
 	return result, nil
+}
+
+// GetOrderHistory 获取历史订单（已成交/已取消）
+// startTime: 起始时间戳（毫秒），如为0则默认查询最近24小时
+// endTime: 结束时间戳（毫秒），如为0则使用当前时间
+// 用于订单验证：对比策略点位与已成交订单，避免重复下单
+func (t *BitgetTrader) GetOrderHistory(symbol string, startTime, endTime int64) ([]map[string]interface{}, error) {
+	result := []map[string]interface{}{}
+
+	// 设置默认时间范围（最近24小时）
+	now := time.Now().UnixMilli()
+	if endTime == 0 {
+		endTime = now
+	}
+	if startTime == 0 {
+		startTime = now - 24*60*60*1000 // 24小时前
+	}
+
+	log.Printf("[order-history] Query %s from %s to %s",
+		symbol,
+		time.UnixMilli(startTime).Format("2006-01-02 15:04:05"),
+		time.UnixMilli(endTime).Format("2006-01-02 15:04:05"))
+
+	// GET /api/v2/mix/order/orders-history
+	// 【注意】Bitget 的 Mix 接口在不同文档/版本中可能：
+	// - productType 枚举大小写不一致（usdt-futures vs USDT-FUTURES）
+	// - 列表字段名不一致（orderList vs entrustedList）
+	// 因此这里做兼容解析，避免“接口有数据但解析成空数组”的误判。
+	buildParams := func(productType string) map[string]string {
+		p := map[string]string{
+			"productType": productType,
+			"marginCoin":  "USDT",
+			"startTime":   strconv.FormatInt(startTime, 10),
+			"endTime":     strconv.FormatInt(endTime, 10),
+			"limit":       "500",
+		}
+		if symbol != "" {
+			p["symbol"] = symbol
+		}
+		return p
+	}
+
+	respBody, err := t.request("GET", "/api/v2/mix/order/orders-history", buildParams("usdt-futures"), nil)
+	if err != nil {
+		// 43025 常见为“暂无数据”，视为正常返回空
+		if strings.Contains(err.Error(), "code=43025") {
+			log.Printf("[order-history] No data for %s (code=43025)", symbol)
+			return result, nil
+		}
+		// 兼容另一种 productType 枚举
+		respBody, err = t.request("GET", "/api/v2/mix/order/orders-history", buildParams("USDT-FUTURES"), nil)
+		if err != nil {
+			if strings.Contains(err.Error(), "code=43025") {
+				log.Printf("[order-history] No data for %s (code=43025)", symbol)
+				return result, nil
+			}
+			return nil, fmt.Errorf("get order history failed: %w", err)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get order history failed: %w", err)
+	}
+
+	// 先解析 envelope，拿到 data 的原始 JSON
+	var envelope struct {
+		Code string          `json:"code"`
+		Msg  string          `json:"msg"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		return nil, fmt.Errorf("parse order history envelope failed: %w", err)
+	}
+	if envelope.Code != "00000" {
+		return nil, fmt.Errorf("bitget API error: code=%s msg=%s", envelope.Code, envelope.Msg)
+	}
+
+	// data 内部字段名兼容：orderList / entrustedList
+	var dataMap map[string]json.RawMessage
+	if err := json.Unmarshal(envelope.Data, &dataMap); err != nil {
+		return nil, fmt.Errorf("parse order history data failed: %w", err)
+	}
+
+	listRaw := json.RawMessage(nil)
+	if v, ok := dataMap["orderList"]; ok {
+		listRaw = v
+	} else if v, ok := dataMap["entrustedList"]; ok {
+		listRaw = v
+	}
+
+	type historyOrder struct {
+		OrderId   string `json:"orderId"`
+		ClientOid string `json:"clientOid"`
+		Symbol    string `json:"symbol"`
+		Size      string `json:"size"`
+
+		FilledQty  string `json:"filledQty"`
+		FilledSize string `json:"filledSize"`
+
+		Price    string `json:"price"`
+		PriceAvg string `json:"priceAvg"`
+		OrderType string `json:"orderType"` // limit, market
+		Side      string `json:"side"`      // open_long, open_short, close_long, close_short
+		State     string `json:"state"`     // filled, cancelled, partially_filled
+		CTime     string `json:"cTime"`
+		UTime     string `json:"uTime"`
+		Fee       string `json:"fee"`
+		FeeCcy    string `json:"feeCcy"`
+	}
+
+	var orders []historyOrder
+	if listRaw != nil {
+		if err := json.Unmarshal(listRaw, &orders); err != nil {
+			return nil, fmt.Errorf("parse order history list failed: %w", err)
+		}
+	}
+
+	for _, order := range orders {
+		price, _ := strconv.ParseFloat(order.Price, 64)
+		avgPrice, _ := strconv.ParseFloat(order.PriceAvg, 64)
+		quantity, _ := strconv.ParseFloat(order.Size, 64)
+		filledStr := order.FilledQty
+		if filledStr == "" {
+			filledStr = order.FilledSize
+		}
+		filledQty, _ := strconv.ParseFloat(filledStr, 64)
+		fee, _ := strconv.ParseFloat(order.Fee, 64)
+
+		result = append(result, map[string]interface{}{
+			"order_id":    order.OrderId,
+			"client_oid":  order.ClientOid,
+			"symbol":      order.Symbol,
+			"type":        order.OrderType,
+			"price":       price,
+			"avg_price":   avgPrice,
+			"quantity":    quantity,
+			"filled_qty":  filledQty,
+			"side":        order.Side,
+			"status":      order.State,
+			"created_at":  order.CTime,
+			"updated_at":  order.UTime,
+			"fee":         fee,
+			"fee_ccy":     order.FeeCcy,
+		})
+	}
+
+	// Debug：如果返回为空，打印 data 的 key 方便定位字段名差异（可用环境变量开关）
+	if len(result) == 0 && os.Getenv("BITGET_DEBUG_ORDER_HISTORY") == "1" {
+		keys := make([]string, 0, len(dataMap))
+		for k := range dataMap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		raw := string(respBody)
+		if len(raw) > 1200 {
+			raw = raw[:1200] + "...(truncated)"
+		}
+		log.Printf("[order-history][debug] Empty result. dataKeys=%v raw=%s", keys, raw)
+	}
+
+	log.Printf("[order-history] %s returned %d historical orders", symbol, len(result))
+	return result, nil
+}
+
+// GetPlanOrderHistory 获取计划单历史（止盈/止损等）
+// startTime/endTime: 毫秒时间戳；部分版本的接口可能忽略该范围，但保留参数用于兼容
+func (t *BitgetTrader) GetPlanOrderHistory(symbol string, startTime, endTime int64) ([]map[string]interface{}, error) {
+	if symbol == "" {
+		return []map[string]interface{}{}, nil
+	}
+
+	buildParams := func(productType, planType string) map[string]string {
+		p := map[string]string{
+			"productType": productType,
+			"symbol":      symbol,
+			"planType":    planType,
+		}
+		// 部分版本支持时间过滤与分页，尽量传入但不强依赖
+		if startTime > 0 {
+			p["startTime"] = strconv.FormatInt(startTime, 10)
+		}
+		if endTime > 0 {
+			p["endTime"] = strconv.FormatInt(endTime, 10)
+		}
+		p["pageSize"] = "100"
+		return p
+	}
+
+	planTypes := []string{"profit_plan", "loss_plan", "pos_profit", "pos_loss"}
+	results := []map[string]interface{}{}
+
+	for _, planType := range planTypes {
+		respBody, err := t.request("GET", "/api/v2/mix/order/orders-plan-history", buildParams("usdt-futures", planType), nil)
+		if err != nil {
+			if strings.Contains(err.Error(), "code=43025") {
+				continue
+			}
+			// fallback productType
+			respBody, err = t.request("GET", "/api/v2/mix/order/orders-plan-history", buildParams("USDT-FUTURES", planType), nil)
+			if err != nil {
+				if strings.Contains(err.Error(), "code=43025") {
+					continue
+				}
+				return nil, fmt.Errorf("get plan order history failed: %w", err)
+			}
+		}
+
+		var envelope struct {
+			Code string          `json:"code"`
+			Msg  string          `json:"msg"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(respBody, &envelope); err != nil {
+			return nil, fmt.Errorf("parse plan history envelope failed: %w", err)
+		}
+		if envelope.Code != "00000" {
+			return nil, fmt.Errorf("bitget API error: code=%s msg=%s", envelope.Code, envelope.Msg)
+		}
+
+		var dataMap map[string]json.RawMessage
+		if err := json.Unmarshal(envelope.Data, &dataMap); err != nil {
+			return nil, fmt.Errorf("parse plan history data failed: %w", err)
+		}
+
+		listRaw := json.RawMessage(nil)
+		if v, ok := dataMap["entrustedList"]; ok {
+			listRaw = v
+		} else if v, ok := dataMap["orderList"]; ok {
+			listRaw = v
+		}
+		if listRaw == nil {
+			continue
+		}
+
+		type planOrder struct {
+			OrderId      string `json:"orderId"`
+			Symbol       string `json:"symbol"`
+			PlanType     string `json:"planType"`
+			TriggerPrice string `json:"triggerPrice"`
+			Size         string `json:"size"`
+			HoldSide     string `json:"holdSide"`
+			Status       string `json:"status"`
+			CTime        string `json:"cTime"`
+			UTime        string `json:"uTime"`
+		}
+		var orders []planOrder
+		if err := json.Unmarshal(listRaw, &orders); err != nil {
+			return nil, fmt.Errorf("parse plan history list failed: %w", err)
+		}
+
+		for _, o := range orders {
+			triggerPrice, _ := strconv.ParseFloat(o.TriggerPrice, 64)
+			qty, _ := strconv.ParseFloat(o.Size, 64)
+			typ := o.PlanType
+			if typ == "" {
+				typ = planType
+			}
+			orderType := typ
+			if typ == "profit_plan" || typ == "pos_profit" {
+				orderType = "take_profit"
+			} else if typ == "loss_plan" || typ == "pos_loss" {
+				orderType = "stop_loss"
+			}
+			results = append(results, map[string]interface{}{
+				"order_id":       o.OrderId,
+				"symbol":         o.Symbol,
+				"type":           orderType,
+				"price":          triggerPrice,
+				"quantity":       qty,
+				"side":           o.HoldSide,
+				"status":         o.Status,
+				"created_at":     o.CTime,
+				"updated_at":     o.UTime,
+				"order_category": "plan_history",
+				"plan_type":      typ,
+			})
+		}
+	}
+
+	log.Printf("[plan-history] %s returned %d plan history orders", symbol, len(results))
+	return results, nil
 }

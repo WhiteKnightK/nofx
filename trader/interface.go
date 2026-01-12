@@ -61,4 +61,8 @@ type Trader interface {
 
 	// GetOpenOrders 获取当前未成交的委托单（含止盈止损计划单）
 	GetOpenOrders(symbol string) ([]map[string]interface{}, error)
+
+	// GetOrderHistory 获取历史订单（已成交/已取消）
+	// startTime/endTime: 时间戳（毫秒），0表示使用默认值
+	GetOrderHistory(symbol string, startTime, endTime int64) ([]map[string]interface{}, error)
 }

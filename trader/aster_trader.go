@@ -1237,6 +1237,12 @@ func (t *AsterTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, er
 	return []map[string]interface{}{}, nil
 }
 
+// GetOrderHistory 获取历史订单（Aster暂不实现，仅为接口兼容）
+func (t *AsterTrader) GetOrderHistory(symbol string, startTime, endTime int64) ([]map[string]interface{}, error) {
+	log.Printf("⚠️  Aster GetOrderHistory 暂不实现")
+	return []map[string]interface{}{}, nil
+}
+
 // PlaceLimitOrder 下限价委托开仓单 (Aster Stub)
 func (t *AsterTrader) PlaceLimitOrder(symbol string, side, tradeSide string, quantity float64, price float64, leverage int) (map[string]interface{}, error) {
 	return nil, fmt.Errorf("PlaceLimitOrder not implemented for Aster yet")

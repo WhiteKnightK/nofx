@@ -1,6 +1,7 @@
 package config
 
 import (
+	"database/sql"
 	"fmt"
 )
 
@@ -67,6 +68,23 @@ func (d *Database) SaveParsedSignal(s *ParsedSignal) error {
 
 	_, err := d.db.Exec(query, s.SignalID, s.Symbol, s.Direction, s.ReceivedAt, s.ContentJSON, s.RawContent)
 	return err
+}
+
+// ParsedSignalExists 检查某个解析信号是否已存在（用于持久化去重）
+func (d *Database) ParsedSignalExists(signalID string) (bool, error) {
+	if signalID == "" {
+		return false, nil
+	}
+
+	var one int
+	err := d.db.QueryRow(`SELECT 1 FROM parsed_signals WHERE signal_id = ? LIMIT 1`, signalID).Scan(&one)
+	if err == nil {
+		return true, nil
+	}
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return false, err
 }
 
 // GetAllParsedSignals 获取所有已解析的信号（按时间倒序）

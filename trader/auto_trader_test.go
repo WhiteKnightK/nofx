@@ -11,6 +11,7 @@ import (
 	"nofx/logger"
 	"nofx/market"
 	"nofx/pool"
+	"nofx/signal"
 
 	"github.com/agiledragon/gomonkey/v2"
 	"github.com/stretchr/testify/suite"
@@ -978,11 +979,18 @@ func (m *MockDatabase) UpdateTraderInitialBalance(userID, traderID string, newBa
 type MockTrader struct {
 	balance              map[string]interface{}
 	positions            []map[string]interface{}
+	openOrders           []map[string]interface{} // 用于 GetOpenOrders 返回
 	shouldFailBalance    bool
 	shouldFailPositions  bool
 	shouldFailOpenLong   bool
 	shouldFailCloseLong  bool
 	shouldFailCloseShort bool
+
+	// 调用跟踪
+	SetStopLossCalled   bool
+	SetTakeProfitCalled bool
+	LastSLPrice         float64
+	LastTPPrice         float64
 }
 
 func (m *MockTrader) GetBalance() (map[string]interface{}, error) {
@@ -1059,10 +1067,14 @@ func (m *MockTrader) GetMarketPrice(symbol string) (float64, error) {
 }
 
 func (m *MockTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
+	m.SetStopLossCalled = true
+	m.LastSLPrice = stopPrice
 	return nil
 }
 
 func (m *MockTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
+	m.SetTakeProfitCalled = true
+	m.LastTPPrice = takeProfitPrice
 	return nil
 }
 
@@ -1087,9 +1099,96 @@ func (m *MockTrader) FormatQuantity(symbol string, quantity float64) (string, er
 }
 
 func (m *MockTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	if m.openOrders != nil {
+		return m.openOrders, nil
+	}
 	return []map[string]interface{}{}, nil
 }
 
+func (m *MockTrader) GetOrderHistory(symbol string, startTime, endTime int64) ([]map[string]interface{}, error) {
+	return []map[string]interface{}{}, nil
+}
+
+func (m *MockTrader) CancelOrder(symbol, orderId string) error {
+	return nil
+}
+
+func (m *MockTrader) PlaceLimitOrder(symbol string, side, tradeSide string, quantity float64, price float64, leverage int) (map[string]interface{}, error) {
+	return map[string]interface{}{
+		"orderId": int64(123460),
+		"symbol":  symbol,
+	}, nil
+}
+
+
+// TestCheckStrategyCompletion 测试二次检查补单逻辑
+func (s *AutoTraderTestSuite) TestCheckStrategyCompletion() {
+	// 1. 准备测试数据
+	symbol := "ETHUSDT"
+	strat := &signal.SignalDecision{
+		SignalID: "test-001",
+		Symbol:   symbol,
+		StopLoss: signal.StopLossStrategy{Price: 3000.0},
+		TakeProfits: []signal.TPStrategy{
+			{Price: 3500.0, Percent: 1.0},
+		},
+	}
+
+	// 场景A: 有持仓，无止损 => 应该触发 SetStopLoss 和 SetTakeProfit
+	s.mockTrader = new(MockTrader)
+	s.autoTrader.trader = s.mockTrader
+
+	// Mock GetPositions: 返回 0.1 ETH 多单
+	s.mockTrader.positions = []map[string]interface{}{
+		{
+			"symbol":      symbol,
+			"positionAmt": 0.1,
+		},
+	}
+	// Mock GetOpenOrders: 空列表（无止损）
+	s.mockTrader.openOrders = []map[string]interface{}{}
+
+	// 执行测试
+	s.autoTrader.CheckStrategyCompletion(strat)
+
+	// 验证调用
+	s.T().Logf("Scenario A: SetStopLossCalled=%v, SetTakeProfitCalled=%v", s.mockTrader.SetStopLossCalled, s.mockTrader.SetTakeProfitCalled)
+	s.True(s.mockTrader.SetStopLossCalled, "应该并且只能调用 SetStopLoss")
+	s.True(s.mockTrader.SetTakeProfitCalled, "应该并且只能调用 SetTakeProfit")
+	s.Equal(3000.0, s.mockTrader.LastSLPrice)
+	s.Equal(3500.0, s.mockTrader.LastTPPrice)
+
+	// 场景B: 有持仓，已有止损 => 不应重复设置
+	s.mockTrader = new(MockTrader)
+	s.autoTrader.trader = s.mockTrader
+
+	s.mockTrader.positions = []map[string]interface{}{
+		{
+			"symbol":      symbol,
+			"positionAmt": 0.1,
+		},
+	}
+
+	// Mock GetOpenOrders: 返回已有止损单
+	s.mockTrader.openOrders = []map[string]interface{}{
+		{
+			"symbol": symbol,
+			"type":   "stop_loss", // 表示已存在
+		},
+		{
+			"symbol": symbol,
+			"type":   "take_profit",
+		},
+	}
+
+	// 执行测试
+	s.autoTrader.CheckStrategyCompletion(strat)
+
+	// 验证不调用
+	s.T().Logf("Scenario B: SetStopLossCalled=%v, SetTakeProfitCalled=%v", s.mockTrader.SetStopLossCalled, s.mockTrader.SetTakeProfitCalled)
+	s.False(s.mockTrader.SetStopLossCalled, "不应重复设置止损")
+	s.False(s.mockTrader.SetTakeProfitCalled, "不应重复设置止盈")
+}
 
 // ============================================================
 // 测试套件入口

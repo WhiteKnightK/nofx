@@ -782,6 +782,12 @@ func (t *HyperliquidTrader) GetOpenOrders(symbol string) ([]map[string]interface
 	return []map[string]interface{}{}, nil
 }
 
+// GetOrderHistory 获取历史订单（Hyperliquid暂不实现，仅为接口兼容）
+func (t *HyperliquidTrader) GetOrderHistory(symbol string, startTime, endTime int64) ([]map[string]interface{}, error) {
+	log.Printf("⚠️  Hyperliquid GetOrderHistory 暂不实现")
+	return []map[string]interface{}{}, nil
+}
+
 
 // getSzDecimals 获取币种的数量精度
 func (t *HyperliquidTrader) getSzDecimals(coin string) int {

@@ -155,6 +155,7 @@ func (m *Monitor) CheckEmails() error {
 
 	targetUids := new(imap.SeqSet)
 	uidToEnvelope := make(map[uint32]*imap.Envelope)
+	uidToMessageID := make(map[uint32]string)
 	totalTargetCount := 0
 
 	for msg := range messages {
@@ -189,9 +190,33 @@ func (m *Monitor) CheckEmails() error {
 			isWhitelisted
 
 		if isPotentialStrategy {
+			// 生成基于 (发件人 + 标题 + 时间) 的唯一指纹，用于持久化去重
+			fingerprintSource := fmt.Sprintf("%s|%s|%s", fromEmail, subject, msg.Envelope.Date.Format(time.RFC3339))
+			messageID := fmt.Sprintf("%x", sha256.Sum256([]byte(fingerprintSource)))
+
+			// 先查本地缓存
+			m.mu.Lock()
+			noticeProcessed := m.processedCache[messageID]
+			m.mu.Unlock()
+			if noticeProcessed {
+				continue
+			}
+
+			// 再查数据库（持久化去重），避免重启回放旧邮件触发 AI
+			if config.GlobalDB != nil {
+				if exists, err := config.GlobalDB.ParsedSignalExists(messageID); err == nil && exists {
+					// 写入本地缓存，减少下一轮重复 DB 查询
+					m.mu.Lock()
+					m.processedCache[messageID] = true
+					m.mu.Unlock()
+					continue
+				}
+			}
+
 			targetUids.AddNum(msg.Uid)
 			totalTargetCount++
 			uidToEnvelope[msg.Uid] = msg.Envelope
+			uidToMessageID[msg.Uid] = messageID
 			
 		}
 	}
@@ -234,9 +259,12 @@ func (m *Monitor) CheckEmails() error {
 		if len(envelope.From) > 0 {
 			fromEmail = fmt.Sprintf("%s@%s", envelope.From[0].MailboxName, envelope.From[0].HostName)
 		}
-		// 生成基于 (发件人 + 标题 + 时间) 的唯一指纹，用于持久化去重
-		fingerprintSource := fmt.Sprintf("%s|%s|%s", fromEmail, envelope.Subject, envelope.Date.Format(time.RFC3339))
-		messageID := fmt.Sprintf("%x", sha256.Sum256([]byte(fingerprintSource)))
+		// 复用第一阶段预计算的 messageID（避免重复计算并确保一致）
+		messageID := uidToMessageID[msg.Uid]
+		if messageID == "" {
+			fingerprintSource := fmt.Sprintf("%s|%s|%s", fromEmail, envelope.Subject, envelope.Date.Format(time.RFC3339))
+			messageID = fmt.Sprintf("%x", sha256.Sum256([]byte(fingerprintSource)))
+		}
 
 		m.mu.Lock()
 		if m.processedCache[messageID] {

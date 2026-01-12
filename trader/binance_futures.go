@@ -908,6 +908,12 @@ func (t *FuturesTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, 
 	return []map[string]interface{}{}, nil
 }
 
+// GetOrderHistory 获取历史订单（Binance暂不实现，仅为接口兼容）
+func (t *FuturesTrader) GetOrderHistory(symbol string, startTime, endTime int64) ([]map[string]interface{}, error) {
+	log.Printf("⚠️  Binance GetOrderHistory 暂不实现")
+	return []map[string]interface{}{}, nil
+}
+
 // PlaceLimitOrder 下限价委托开仓单 (Binance Stub)
 func (t *FuturesTrader) PlaceLimitOrder(symbol string, side, tradeSide string, quantity float64, price float64, leverage int) (map[string]interface{}, error) {
 	return nil, fmt.Errorf("PlaceLimitOrder not implemented for Binance Futures yet")
