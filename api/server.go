@@ -222,14 +222,14 @@ func (s *Server) setupRoutes() {
 
 // LogEntry 日志条目结构 (Zap JSON Format)
 type LogEntry struct {
-	Level      string  `json:"level"`
-	Time       string  `json:"ts"`
-	Caller     string  `json:"caller"`
-	Message    string  `json:"msg"`
-	Module     string  `json:"module,omitempty"`
-	TraderID   string  `json:"trader_id,omitempty"`
-	Symbol     string  `json:"symbol,omitempty"`
-	Stacktrace string  `json:"stacktrace,omitempty"`
+	Level      string `json:"level"`
+	Time       string `json:"ts"`
+	Caller     string `json:"caller"`
+	Message    string `json:"msg"`
+	Module     string `json:"module,omitempty"`
+	TraderID   string `json:"trader_id,omitempty"`
+	Symbol     string `json:"symbol,omitempty"`
+	Stacktrace string `json:"stacktrace,omitempty"`
 }
 
 // handleGetLogs 获取系统日志
@@ -689,13 +689,13 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		return
 	}
 
-	// 校验杠杆值
-	if req.BTCETHLeverage < 0 || req.BTCETHLeverage > 50 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "BTC/ETH杠杆必须在1-50倍之间"})
+	// Validate leverage range (0 means use system default)
+	if req.BTCETHLeverage < 0 || req.BTCETHLeverage > 125 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "BTC/ETH leverage must be between 1 and 125 (or 0 to use default)."})
 		return
 	}
-	if req.AltcoinLeverage < 0 || req.AltcoinLeverage > 20 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "山寨币杠杆必须在1-20倍之间"})
+	if req.AltcoinLeverage < 0 || req.AltcoinLeverage > 75 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Altcoin leverage must be between 1 and 75 (or 0 to use default)."})
 		return
 	}
 
@@ -899,6 +899,16 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 		return
 	}
 
+	// Validate leverage range (0 means keep existing)
+	if req.BTCETHLeverage < 0 || req.BTCETHLeverage > 125 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "BTC/ETH leverage must be between 1 and 125 (or 0 to keep existing)."})
+		return
+	}
+	if req.AltcoinLeverage < 0 || req.AltcoinLeverage > 75 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Altcoin leverage must be between 1 and 75 (or 0 to keep existing)."})
+		return
+	}
+
 	// 获取用户角色
 	user, err := s.database.GetUserByID(userID)
 	if err != nil {
@@ -1038,6 +1048,10 @@ func (s *Server) handleUpdateTrader(c *gin.Context) {
 			} else {
 				// 仅更新无需重启的配置 (如 System Prompt)
 				runningTrader.SetSystemPromptTemplate(systemPromptTemplate)
+				runningTrader.SetCustomPrompt(req.CustomPrompt)
+				runningTrader.SetOverrideBasePrompt(req.OverrideBasePrompt)
+				runningTrader.SetLeverageConfig(btcEthLeverage, altcoinLeverage)
+				runningTrader.SetCrossMarginMode(isCrossMargin)
 				log.Printf("✓ 已更新运行中交易员的系统提示词模板: %s → %s", existingTrader.SystemPromptTemplate, systemPromptTemplate)
 			}
 		}
@@ -2132,30 +2146,75 @@ func (s *Server) handleGetOrders(c *gin.Context) {
 	// 获取交易对（如果有指定）
 	symbol := c.Query("symbol") // 可选：只查询某一个交易对的委托
 
-	// 如果未指定 symbol，直接查询账号下所有未成交委托（Bitget 支持 symbol 为空）
-	if symbol == "" {
-		orders, err := trader.GetOpenOrders("")
+	orders, err := trader.GetOpenOrders(symbol)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取委托单失败: %v", err)})
 			return
 		}
 
-		// Bitget 返回的订单里本身会包含 symbol，这里只做透传
-		c.JSON(http.StatusOK, gin.H{"orders": orders})
-		return
+	// 补充 symbol 字段，并注入 leverage 和 计算 position_value
+	// 1. 获取持仓信息以拿到杠杆倍数
+	var leverageMap = make(map[string]float64)
+	if positions, err := trader.GetPositions(); err == nil {
+		for _, pos := range positions {
+			if sym, ok := pos["symbol"].(string); ok {
+				if lev, ok := pos["leverage"].(float64); ok {
+					leverageMap[sym] = lev
+				}
+			}
+		}
 	}
 
-	// 指定了symbol，仅查询该交易对
-	orders, err := trader.GetOpenOrders(symbol)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取委托单失败: %v", err)})
-		return
+	// 获取用户配置的杠杆，作为 fallback
+	btcEthLev := 5.0
+	altLev := 5.0
+	if cfg := autoTrader.GetConfig(); cfg != nil {
+		if cfg.BTCETHLeverage > 0 {
+			btcEthLev = float64(cfg.BTCETHLeverage)
+		}
+		if cfg.AltcoinLeverage > 0 {
+			altLev = float64(cfg.AltcoinLeverage)
+		}
 	}
 
-	// 补充 symbol 字段（以防个别交易所未返回）
 	for _, order := range orders {
-		if _, ok := order["symbol"]; !ok {
-			order["symbol"] = symbol
+		// 确保 symbol 存在
+		ordSymbol, ok := order["symbol"].(string)
+		if !ok {
+			ordSymbol = symbol
+			order["symbol"] = ordSymbol
+		}
+
+		// 注入 leverage
+		lev, exists := leverageMap[ordSymbol]
+		if !exists {
+			// 如果没有持仓，尝试使用配置的杠杆
+			if strings.Contains(ordSymbol, "BTC") || strings.Contains(ordSymbol, "ETH") {
+				lev = btcEthLev
+			} else {
+				lev = altLev
+			}
+		}
+		order["leverage"] = lev
+
+		// 计算 position_value (名义价值)
+		var price float64
+		if p, ok := order["price"].(float64); ok {
+			price = p
+		} else if tp, ok := order["triggerPrice"].(string); ok {
+			// 计划委托可能用 triggerPrice
+			price, _ = strconv.ParseFloat(tp, 64)
+		}
+
+		var qty float64
+		if q, ok := order["quantity"].(float64); ok {
+			qty = q
+		} else if s, ok := order["size"].(string); ok {
+			qty, _ = strconv.ParseFloat(s, 64)
+		}
+
+		if price > 0 && qty > 0 {
+			order["position_value"] = price * qty
 		}
 	}
 
@@ -2342,7 +2401,7 @@ func (s *Server) handleEquityHistory(c *gin.Context) {
 		Timestamp        string  `json:"timestamp"`
 		TotalEquity      float64 `json:"total_equity"`      // 账户净值（wallet + unrealized）
 		AvailableBalance float64 `json:"available_balance"` // 可用余额
-		PnL              float64 `json:"pnl"`              // 总盈亏（相对初始余额）- 与前端期望一致
+		PnL              float64 `json:"pnl"`               // 总盈亏（相对初始余额）- 与前端期望一致
 		PnLPct           float64 `json:"pnl_pct"`           // 总盈亏百分比 - 与前端期望一致
 		TotalPnL         float64 `json:"total_pnl"`         // 兼容旧字段名
 		TotalPnLPct      float64 `json:"total_pnl_pct"`     // 兼容旧字段名

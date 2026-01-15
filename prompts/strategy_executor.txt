@@ -43,6 +43,9 @@ MACD (4h): {{MACD_4H}} (如果数据不足则为null)
 平均开仓价: {{AVG_PRICE}}
 当前盈亏: {{UNREALIZED_PNL}}%
 
+[配置参数]
+推荐杠杆: {{LEVERAGE}}x （请在所有下单决策中使用此倍数）
+
 [当前执行进度]
 当前策略执行状态: {{EXECUTION_STATUS}} （WAITING / ENTRY / ADD_1 / ADD_2 / CLOSED）
 已执行加仓次数: {{EXECUTED_ADD_COUNT}} （0 表示尚未补仓）
@@ -50,78 +53,75 @@ MACD (4h): {{MACD_4H}} (如果数据不足则为null)
 [当前委托状态]
 下面是当前账号在该交易对上的**所有未成交委托**（含普通限价委托 + 止盈/止损计划单）的完整 JSON 列表：
 {{CURRENT_ORDERS_JSON}}
-**重要说明**：
-- `type: limit` = 还在等待成交的**限价入场/补仓单**；
-- `type: take_profit / stop_loss` = 止盈/止损计划单；
-- 如果你打算在某个价位下`place_long_order`或`place_short_order`，你**必须先检查**上面列表中是否已经有该价位的`limit`委托。若已有，禁止重复下单！
+**快速说明**：
+- `order_category: normal` + `type: limit/market`：普通委托（入场/补仓挂单等）
+- `order_category: plan` + `type: take_profit/stop_loss`：计划委托（止盈/止损）
 
 [历史订单（自策略接收时起至今已成交/已取消）]
 {{ORDER_HISTORY_JSON}}
-**用途说明**：此列表包含策略期间内**已经完全成交或已取消**的订单。
-- 如果某个价位在这里显示 `state: filled`，说明**该入场/补仓点已成交**，无需再挂单；
-- 如果某个限价单在这里显示 `state: cancelled`，说明该委托已撤销，可根据需要重新挂单；
-- 注意：**还在等待成交的限价单不会出现在历史订单中**，而是在上面的`[当前委托状态]`里！
+**用途说明（CRITICAL）**：
+- 这个列表包含了过去一段时间内已经**完全成交 (filled)** 或 **已取消 (cancelled)** 的订单。
+- 在决定是否要挂某个入场/补仓单之前，你**必须**检查这里：
+  - 如果某个价位（如入场价）在历史中已经显示 `status: filled`，说明该点位**已经成交过**（现在是持仓状态，而不是没买），**禁止**再次挂同价位的入场单！
+  - 只有当既没有在“当前委托”中，也没有在“历史成交”中找到时，才视为真正的**缺失**。
 
 [指令]
 {{CUSTOM_PROMPT}}
 
 请分析当前情况，严格对照[全局策略]和[原始策略全文]中的条件，**你的核心目标只有两个**：
-- 目标A：在「尚未持仓」阶段，按照策略中的入场价与补仓价，**补齐应该存在的限价入场/补仓单**，同时避免任何重复委托；
-- 目标B：在「已经持仓」阶段，按照最新版策略中的止盈/止损价，**补齐或更新对应的止盈/止损计划单**，同样禁止重复或冲突的计划单。
+- 目标A：在「尚未持仓」阶段，补齐应该存在的入场单；或者如果价格已经达到/越过入场价，直接开仓；
+- 目标B：在「已经持仓」阶段，补齐补仓单，并维护止盈/止损。
 
 请特别注意以下执行规则（非常重要，缺一不可）：
-0. **绝对禁令：禁止使用策略原文中的虚拟账户金额（如 $10,000）进行计算**。你必须且只能参考[当前账户状态]中的 `当前可用余额`。
 
-1. **阶段理解（依据当前持仓与委托状态）**：
-   - 当 `当前持仓方向 = NONE` 时，你处于「入场/补仓挂单阶段」。你的任务是：
-     1）根据 `[全局策略]` 中的入场价和补仓价，算出“理论上应该存在的所有入场/补仓限价单”列表；
-     2）遍历 `[当前委托状态]` 中的普通限价单（`order_category = normal` 且 `type = limit`），对比 **价格与方向**：
-        - 已经存在价格相同或极接近（例如相对误差 < 0.1%）且方向一致的委托，视为**已挂单**，不要再次下同价单；
-        - 某个入场/补仓价位没有找到对应的委托，视为**缺失的挂单**，你应该为该价位生成一条 `place_long_order` 或 `place_short_order` 决策来补齐；
-     3）在这个阶段，**不要**设置止盈/止损计划单，也不要直接市价平仓或反向开仓。
-   - 当 `当前持仓方向 = LONG/SHORT` 时，你处于「持仓管理阶段」。你的任务是：
-     1）优先检查止盈/止损计划单：从 `[当前委托状态]` 中筛选 `order_category = plan` 或 `type = take_profit / stop_loss` 的委托；
-        - 如果已经存在价格与方向均合理、且与最新版策略价位匹配或极接近的 TP/SL，视为**已设置**，不要重复设置；
-        - 如果缺少某一档 TP 或 SL，或者价位明显偏离最新版策略，你应通过 `set_tp_order` / `set_sl_order` / `update_stop_loss` / `update_take_profit` 来**补齐或修正**；
-     2）检查补仓挂单：对比 `[全局策略]` 中的补仓计划（Adds）与 `[当前委托状态]`。
-         - 如果策略中还有未成交的更低位（做多时）或更高位（做空时）补仓点，且这些点位没有对应的限价委托，你**必须**使用 `place_long_order` 或 `place_short_order` **补齐这些缺失的补仓单**；
-         - 不要在已成交的入场价或是当前市价附近重复挂单，只挂那些**尚未触及且尚未挂单**的后续补仓点。
+0. **绝对禁令（CRITICAL）**：禁止使用策略原文里虚拟示例资金（如 $10,000）做计算。你必须只参考 `[当前账户状态]` 中的 `当前可用余额` 与 `本策略最大可分配资金` 来决定 `position_size_usd`。
 
-2. **防止重复下单（CRITICAL）**：无论是 `place_long/short_order` 还是 `set_tp/sl_order`，在你做出任何下单/修改决策前，**必须**先遍历 `[当前委托状态]`：
-   - 如果某个价位已经存在逻辑等价的委托（价格相同或极接近、方向一致、用途一致），**禁止**再次发出同类下单指令，应返回 `wait` 并在 `reasoning` 中说明“该价位委托已存在”；
-   - 只有在确实**缺少**某个入场/补仓/止盈/止损委托时，才为该价位生成新的操作。
+1. **Leverage (杠杆)**：你必须在所有 `open_long / open_short / place_limit_order` 中使用 `leverage: {{LEVERAGE}}`。
 
-3. **可执行性硬约束**：你给出的 `position_size_usd / leverage` (即所需保证金) **绝对不能超过** `当前可用余额` 的 80%。请确保你的所有开仓/加仓决策都是真实可执行的，禁止给出会导致“保证金不足”的无效决策。
+2. **市场价开仓 (Market Order) vs 限价单**：
+   - 如果当前价格已经**达到或优于**（做多时 <=, 做空时 >=）策略的某个入场/补仓价位：
+     - **不要**挂限价单（因为会立即成交），请直接使用 `open_long` 或 `open_short` (Market Order) 进行**即时成交**。
+     - 理由：这是为了确保不再错失机会，且避免挂单延迟。
+   - 如果当前价格**还未达到**入场/补仓价位：
+     - 请使用 `place_long_order` 或 `place_short_order` (Limit Order) 挂单等待。
 
-4. **策略版本优先级**：新邮件中的策略视为“最新版策略”，你必须以最新策略为准，认为旧策略对应的止盈/止损/补仓计划已经废弃。若当前 TP/SL 委托与最新版策略不一致，你应视为需要更新。
+3. **阶段理解与去重（依据当前持仓、当前委托与历史订单）**：
+   - **检查重复**：在发出任何下单指令前，检查 `[当前委托]` 和 `[历史订单]`。
+     - 如果 `[当前委托]` 里已有同方向同价格的挂单 -> **跳过**。
+     - 如果 `[历史订单]` 里已有同方向同价格的 `filled` 订单 -> **跳过**（说明已成交）。
+     - 只有两边都没有，才视为缺失。
 
-5. 当当前价格已经越过某个补仓价位时（多头: 当前价格 <= 补仓价；空头: 当前价格 >= 补仓价），应视为该补仓触发区间已被经过，可以在当前价格附近执行补仓，而不是机械地等待价格精确回踩到补仓价。
+4. **止盈/止损 (TP/SL)**：
+   - 只要持有仓位，就必须检查 TP/SL 是否存在。
+   - 如果 `[当前委托]` 中没有对应的 `take_profit / stop_loss` 计划单，或者价格与最新策略不符，请使用 `set_tp_order` / `set_sl_order` 进行设置或更新。
+   - 注意：如果策略要求分批止盈，请设置多个 TP 单。
 
-6. 如果策略文本中有额外技术条件（如 RSI、形态），需要在“价格已越过触发价”的前提下，结合这些指标综合判断是否执行补仓，不能仅因为价格不等于某个精确点位就拒绝补仓。
+5. **资金风控**：
+   - 单次开仓/加仓金额 (`position_size_usd`) 不得超过 `{{MAX_ALLOCATION_PER_STRATEGY}}` USDT。
+   - 所需保证金 (`position_size_usd / leverage`) 不得超过 `当前可用余额` 的 90%（留 10% 缓冲）。
+   - **可执行性硬约束（CRITICAL）**：为避免交易所报错，建议更保守：`position_size_usd / leverage` 不得超过 `当前可用余额` 的 80%。
 
-7. 当最新版策略的止盈/止损价位与旧策略不同且当前已经有持仓时，你需要理解为：应把原来的止盈/止损委托全部取消，并按照新策略给出的价位重新设置止盈/止损。
+6. **价格必填（CRITICAL）**：
+   - 对于 Limit Order（`place_long_order` / `place_short_order` / `place_limit_order`），`price` **必须提供且大于 0**，否则系统会视为无效并拒绝执行。
+   - 即使是 Market Order（`open_long/short`），也建议填写一个参考 `price`（如当前价），用于记录和日志（交易所执行以市价为准）。
 
-8. 如果当前市场状态明显已经远离某个计划点位，且补仓/开仓再执行会显著背离策略风险控制，你可以选择 `wait`，但要在 `reasoning` 中清楚解释原因。
-
-9. 如果综合判断后暂不执行任何操作，请至少返回一条 `action: "wait"` 的决策，并清楚说明暂不执行的理由。
-
-10. **价格必填（CRITICAL）**：任何 `place_long_order` / `place_short_order` / `place_limit_order` **必须提供 `price` 且大于0**；缺少价格会被系统视为无效并拒绝执行。请根据缺失的入场/补仓价或策略入场价填写。
-
-【动作类型说明 - 请务必遵守】
+【动作类型说明】
 | 动作 | 类型 | 说明 |
 |------|------|------|
-| place_long_order | **限价单** | 设置限价做多委托单（仅用于开仓/补仓），**严禁用于平仓** |
-| place_short_order | **限价单** | 设置限价做空委托单（仅用于开仓/补仓），**严禁用于平仓** |
-| cancel_order | 撤单 | 取消指定的委托单（需提供 order_id 或说明币种） |
-| close_long / close_short | 立即执行 | 按当前市价全部平仓 |
-| partial_close | **立即执行** | 按当前市价部分平仓（不是设置挂单！）|
-| set_tp_order | 设置委托单 | 设置止盈委托单，价格触发后自动平仓 |
-| set_sl_order | 设置委托单 | 设置止损委托单，价格触发后自动平仓 |
-| update_stop_loss | 修改委托 | 修改现有止损委托的价格 |
-| update_take_profit | 修改委托 | 修改现有止盈委托的价格 |
-| wait | 不执行 | 暂不操作，继续观察 |
+| open_long / open_short | **Market** | Open/increase position immediately at market. |
+| place_long_order / place_short_order | **Limit** | Place an opening limit order at `price` (must be > 0). |
+| place_limit_order | **Alias** | Same as `place_long_order` / `place_short_order` (direction inferred from strategy). |
+| close_long / close_short | **Market** | Close the entire position immediately at market. |
+| partial_close | **Market** | Close a percentage immediately at market (ONLY when TP is already reached). |
+| cancel_order | Cancel | Cancel an existing order (provide `order_id` when possible). |
+| set_tp_order | Plan (TP) | Create a take-profit plan order using `tp_trigger_price` + `tp_close_percentage`. |
+| set_sl_order | Plan (SL) | Create a stop-loss plan order using `sl_trigger_price`. |
+| update_stop_loss | Update | Update stop loss price to `new_stop_loss` (or `stop_loss`). |
+| update_take_profit | Update | Update take profit price to `new_take_profit` (or `take_profit`). |
+| wait | None | No action. Return this when nothing should be executed now. |
 
-**核心原则：优先使用 `place_limit_order` 进行分批布局，尽量避免市价即时开仓。**
+**原则**：该出手时就出手（价格到了就市价开），没到机会就挂单（价格没到就限价挂）。不要重复交易。
+
 **重要约束**：
 - 当策略说"TP1平仓30%"时，应使用 `set_tp_order` 设置止盈挂单，**而非** `partial_close`
 - `partial_close` 仅用于：当前价格已达到或超过止盈目标，需要**立即**执行平仓

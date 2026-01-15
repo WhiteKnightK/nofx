@@ -12,19 +12,52 @@ interface OrdersPanelProps {
 // 小工具：格式化方向/动作/时间，尽量贴近交易所展示
 const formatDirection = (order: any) => {
   const side = (order.side || order.holdSide || '').toString().toLowerCase()
-  if (!side) return '—'
+  const tradeSide = (order.trade_side || order.tradeSide || '').toString().toLowerCase()
+  const posSide = (order.pos_side || order.posSide || '').toString().toLowerCase()
+  const reduceOnly = !!(order.reduce_only ?? order.reduceOnly)
+
+  if (!side && !tradeSide && !posSide) return '—'
+
+  // Bitget 常见组合：tradeSide=open/close + side=buy/sell
+  if ((tradeSide === 'open' || tradeSide === 'close') && (side === 'buy' || side === 'sell')) {
+    if (tradeSide === 'open' && side === 'buy') return '开多'
+    if (tradeSide === 'open' && side === 'sell') return '开空'
+    if (tradeSide === 'close' && side === 'buy') return '平空'
+    if (tradeSide === 'close' && side === 'sell') return '平多'
+  }
+
+  // reduceOnly 兜底：只减仓时 buy/sell 更像平仓方向
+  if (reduceOnly && (side === 'buy' || side === 'sell')) {
+    if (side === 'buy') return '平空'
+    if (side === 'sell') return '平多'
+  }
+
+  // 已有标准枚举
   if (side === 'open_long') return '开多'
   if (side === 'open_short') return '开空'
   if (side === 'close_long') return '平多'
   if (side === 'close_short') return '平空'
   if (side === 'long') return '多'
   if (side === 'short') return '空'
+
+  // posSide + buy/sell 兜底（不同交易所/版本字段差异）
+  if ((posSide === 'long' || posSide === 'short') && (side === 'buy' || side === 'sell')) {
+    if (posSide === 'long' && side === 'buy') return '开多'
+    if (posSide === 'short' && side === 'sell') return '开空'
+    if (posSide === 'long' && side === 'sell') return '平多'
+    if (posSide === 'short' && side === 'buy') return '平空'
+  }
+
   // 兜底处理包含这些关键字的情况
   if (side.includes('open') && side.includes('long')) return '开多'
   if (side.includes('open') && side.includes('short')) return '开空'
   if (side.includes('close') && side.includes('long')) return '平多'
   if (side.includes('close') && side.includes('short')) return '平空'
-  return side
+
+  // buy/sell 最后兜底展示
+  if (side === 'buy') return '买入'
+  if (side === 'sell') return '卖出'
+  return side || tradeSide || posSide
 }
 
 const formatStatus = (status: string) => {
@@ -56,7 +89,7 @@ export function OrdersPanel({ traderId, symbol }: OrdersPanelProps) {
   const { data, error, mutate } = useSWR(
     traderId ? `/api/orders?trader_id=${traderId}${symbol ? `&symbol=${symbol}` : ''}` : null,
     () => api.getOrders(traderId, symbol),
-    { 
+    {
       refreshInterval: 5000,
       keepPreviousData: true
     }
@@ -99,7 +132,7 @@ export function OrdersPanel({ traderId, symbol }: OrdersPanelProps) {
             共 {orders.length} 个
           </span>
         </div>
-        <button 
+        <button
           onClick={() => mutate()}
           className="text-xs px-2 py-1 rounded hover:bg-[#2B3139]"
           style={{ color: '#F0B90B' }}
@@ -147,9 +180,9 @@ export function OrdersPanel({ traderId, symbol }: OrdersPanelProps) {
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#474D57] text-[#EAECEF]">
                             {isTP ? '止盈' : '止损'}
                           </span>
-                          <span 
+                          <span
                             className="text-[10px] px-1.5 py-0.5 rounded font-bold"
-                            style={{ 
+                            style={{
                               backgroundColor: isLong ? 'rgba(14, 203, 129, 0.15)' : 'rgba(246, 70, 93, 0.15)',
                               color: isLong ? '#0ECB81' : '#F6465D'
                             }}
@@ -176,7 +209,7 @@ export function OrdersPanel({ traderId, symbol }: OrdersPanelProps) {
                           </div>
                         </div>
                       </div>
-                      
+
                       <div className="mt-2 pt-2 border-t border-[#363C44] flex justify-between items-center text-[10px]">
                         <div style={{ color: '#5E6673' }}>
                           ID: {order.order_id}
@@ -204,8 +237,13 @@ export function OrdersPanel({ traderId, symbol }: OrdersPanelProps) {
               <div className="grid grid-cols-1 gap-2">
                 {normalOrders.map((order: any) => {
                   const side = (order.side || '').toLowerCase()
-                  const isLong = side.includes('long')
-                  
+                  const tradeSide = (order.trade_side || '').toLowerCase()
+                  const reduceOnly = !!order.reduce_only
+                  const isLong =
+                    side.includes('long') ||
+                    (tradeSide === 'open' && side === 'buy') ||
+                    (tradeSide === 'close' && side === 'sell')
+
                   return (
                     <div
                       key={order.order_id}
@@ -220,9 +258,19 @@ export function OrdersPanel({ traderId, symbol }: OrdersPanelProps) {
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#474D57] text-[#EAECEF]">
                             {order.type === 'limit' ? '限价' : '市价'}
                           </span>
-                          <span 
+                          {reduceOnly && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#191D23] text-[#F0B90B] border border-[#2B3139]">
+                              只减仓
+                            </span>
+                          )}
+                          {(order.margin_mode || order.margin_coin) && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#191D23] text-[#848E9C] border border-[#2B3139]">
+                              {order.margin_mode ? order.margin_mode : '—'} {order.margin_coin ? order.margin_coin : ''}
+                            </span>
+                          )}
+                          <span
                             className="text-[10px] px-1.5 py-0.5 rounded font-bold"
-                            style={{ 
+                            style={{
                               backgroundColor: isLong ? 'rgba(14, 203, 129, 0.15)' : 'rgba(246, 70, 93, 0.15)',
                               color: isLong ? '#0ECB81' : '#F6465D'
                             }}
@@ -235,7 +283,7 @@ export function OrdersPanel({ traderId, symbol }: OrdersPanelProps) {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-5 gap-2">
                         <div>
                           <div className="text-[10px]" style={{ color: '#848E9C' }}>价格</div>
                           <div className="text-sm font-bold font-mono text-[#EAECEF]">
@@ -246,6 +294,18 @@ export function OrdersPanel({ traderId, symbol }: OrdersPanelProps) {
                           <div className="text-[10px]" style={{ color: '#848E9C' }}>数量</div>
                           <div className="text-sm font-mono text-[#EAECEF]">
                             {order.quantity?.toFixed(4) || '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px]" style={{ color: '#848E9C' }}>价值</div>
+                          <div className="text-sm font-mono text-[#EAECEF]">
+                            {order.position_value ? `$${order.position_value.toFixed(2)}` : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px]" style={{ color: '#848E9C' }}>杠杆</div>
+                          <div className="text-sm font-mono text-[#EAECEF]">
+                            {order.leverage ? `${order.leverage}x` : '—'}
                           </div>
                         </div>
                         <div>

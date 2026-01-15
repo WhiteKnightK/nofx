@@ -729,23 +729,23 @@ func (t *BitgetTrader) SetLeverage(symbol string, leverage int) error {
 
 	// Bitget 需要分别为 long 和 short 设置杠杆
 	for _, holdSide := range []string{"long", "short"} {
-		body := map[string]interface{}{
-			"symbol":      symbol,
-			"productType": "USDT-FUTURES",
-			"marginCoin":  "USDT",
-			"leverage":    strconv.Itoa(leverage),
+	body := map[string]interface{}{
+		"symbol":      symbol,
+		"productType": "USDT-FUTURES",
+		"marginCoin":  "USDT",
+		"leverage":    strconv.Itoa(leverage),
 			"holdSide":    holdSide,
-		}
+	}
 
-		_, err := t.request("POST", "/api/v2/mix/account/set-leverage", nil, body)
-		if err != nil {
+	_, err := t.request("POST", "/api/v2/mix/account/set-leverage", nil, body)
+	if err != nil {
 			// 如果错误是"无需变更"，忽略
 			if strings.Contains(err.Error(), "40772") || strings.Contains(err.Error(), "No need") {
 				log.Printf("  ✓ %s 杠杆已是 %dx (%s)", symbol, leverage, holdSide)
 				continue
 			}
 			return fmt.Errorf("set leverage failed (%s): %w", holdSide, err)
-		}
+	}
 		log.Printf("  ✓ %s 杠杆设置成功: %dx (%s)", symbol, leverage, holdSide)
 	}
 
@@ -1138,6 +1138,8 @@ func (t *BitgetTrader) GetMinTradeNum(symbol string) (float64, error) {
 // 返回格式统一为：type (limit/market/stop_loss/take_profit), price, quantity, side, status
 func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
 	result := []map[string]interface{}{}
+	// 用于 symbol 为空时补齐计划单查询范围（避免“无持仓但有计划单”的漏查）
+	symbolSetFromNormal := make(map[string]bool)
 
 	// 1. 获取普通委托单（限价/市价）
 	// GET /api/v2/mix/order/orders-pending
@@ -1166,11 +1168,34 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 					FilledSize string `json:"filledSize"`
 					Price      string `json:"price"`
 					OrderType  string `json:"orderType"` // limit, market
-					Side       string `json:"side"`      // open_long, open_short, close_long, close_short
+					Side       string `json:"side"`      // buy/sell or open_long/open_short/close_long/close_short (depending on API version)
+					TradeSide  string `json:"tradeSide"` // open/close (some responses)
+					PosSide    string `json:"posSide"`   // long/short (some responses)
+					ReduceOnly string `json:"reduceOnly"`
+					MarginCoin string `json:"marginCoin"`
+					MarginMode string `json:"marginMode"` // isolated/cross
 					Status     string `json:"status"`    // live, partially_filled
 					CTime      string `json:"cTime"`     // 创建时间(毫秒时间戳)
 					PriceAvg   string `json:"priceAvg"`  // 成交均价
 				} `json:"entrustedList"`
+				OrderList []struct {
+					OrderId    string `json:"orderId"`
+					ClientOid  string `json:"clientOid"`
+					Symbol     string `json:"symbol"`
+					Size       string `json:"size"`
+					FilledSize string `json:"filledSize"`
+					Price      string `json:"price"`
+					OrderType  string `json:"orderType"`
+					Side       string `json:"side"`
+					TradeSide  string `json:"tradeSide"`
+					PosSide    string `json:"posSide"`
+					ReduceOnly string `json:"reduceOnly"`
+					MarginCoin string `json:"marginCoin"`
+					MarginMode string `json:"marginMode"`
+					Status     string `json:"status"`
+					CTime      string `json:"cTime"`
+					PriceAvg   string `json:"priceAvg"`
+				} `json:"orderList"`
 			} `json:"data"`
 		}
 
@@ -1179,12 +1204,60 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 		} else if pendingResp.Code != "00000" {
 			log.Printf("⚠️ [委托查询] Bitget返回错误 symbol=%s code=%s msg=%s", symbol, pendingResp.Code, pendingResp.Msg)
 		} else {
-			log.Printf("✓ [委托查询] 普通委托: %s 找到 %d 个", symbol, len(pendingResp.Data.EntrustedList))
-			for _, order := range pendingResp.Data.EntrustedList {
+			ordersList := pendingResp.Data.EntrustedList
+			if len(ordersList) == 0 && len(pendingResp.Data.OrderList) > 0 {
+				// 兼容 Bitget 不同字段名
+				for _, o := range pendingResp.Data.OrderList {
+					ordersList = append(ordersList, struct {
+						OrderId    string `json:"orderId"`
+						ClientOid  string `json:"clientOid"`
+						Symbol     string `json:"symbol"`
+						Size       string `json:"size"`
+						FilledSize string `json:"filledSize"`
+						Price      string `json:"price"`
+						OrderType  string `json:"orderType"`
+						Side       string `json:"side"`
+						TradeSide  string `json:"tradeSide"`
+						PosSide    string `json:"posSide"`
+						ReduceOnly string `json:"reduceOnly"`
+						MarginCoin string `json:"marginCoin"`
+						MarginMode string `json:"marginMode"`
+						Status     string `json:"status"`
+						CTime      string `json:"cTime"`
+						PriceAvg   string `json:"priceAvg"`
+					}{
+						OrderId:    o.OrderId,
+						ClientOid:  o.ClientOid,
+						Symbol:     o.Symbol,
+						Size:       o.Size,
+						FilledSize: o.FilledSize,
+						Price:      o.Price,
+						OrderType:  o.OrderType,
+						Side:       o.Side,
+						TradeSide:  o.TradeSide,
+						PosSide:    o.PosSide,
+						ReduceOnly: o.ReduceOnly,
+						MarginCoin: o.MarginCoin,
+						MarginMode: o.MarginMode,
+						Status:     o.Status,
+						CTime:      o.CTime,
+						PriceAvg:   o.PriceAvg,
+					})
+				}
+			}
+
+			log.Printf("✓ [委托查询] 普通委托: %s 找到 %d 个", symbol, len(ordersList))
+			for _, order := range ordersList {
 				price, _ := strconv.ParseFloat(order.Price, 64)
 				quantity, _ := strconv.ParseFloat(order.Size, 64)
 				filledSize, _ := strconv.ParseFloat(order.FilledSize, 64)
 				avgPrice, _ := strconv.ParseFloat(order.PriceAvg, 64)
+
+				if order.Symbol != "" {
+					symbolSetFromNormal[order.Symbol] = true
+				}
+
+				reduceOnly := strings.EqualFold(order.ReduceOnly, "YES") || strings.EqualFold(order.ReduceOnly, "true")
 
 				result = append(result, map[string]interface{}{
 					"order_id":       order.OrderId,
@@ -1195,6 +1268,11 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 					"filled_size":    filledSize,
 					"avg_price":      avgPrice,
 					"side":           order.Side,
+					"trade_side":     order.TradeSide,
+					"pos_side":       order.PosSide,
+					"reduce_only":    reduceOnly,
+					"margin_coin":    order.MarginCoin,
+					"margin_mode":    order.MarginMode,
 					"status":         order.Status,
 					"created_at":     order.CTime,
 					"client_oid":     order.ClientOid,
@@ -1215,19 +1293,34 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 	if symbol != "" {
 		symbolsToQuery = []string{symbol}
 	} else {
-		// symbol 为空时，获取所有持仓交易对
+		// symbol 为空时：优先使用普通委托返回的 symbol，其次使用持仓交易对（避免漏查）
+		for sym := range symbolSetFromNormal {
+			if sym != "" {
+				symbolsToQuery = append(symbolsToQuery, sym)
+			}
+		}
+
+		// 再补充持仓交易对
 		positions, err := t.GetPositions()
 		if err != nil {
 			log.Printf("⚠️ [委托查询] 获取持仓失败，无法查询计划委托: %v", err)
 		} else {
 			symbolSet := make(map[string]bool)
+			for _, sym := range symbolsToQuery {
+				if sym != "" {
+					symbolSet[sym] = true
+				}
+			}
 			for _, pos := range positions {
 				if sym, ok := pos["symbol"].(string); ok && sym != "" {
 					symbolSet[sym] = true
 				}
 			}
+			symbolsToQuery = symbolsToQuery[:0]
 			for sym := range symbolSet {
-				symbolsToQuery = append(symbolsToQuery, sym)
+				if sym != "" {
+					symbolsToQuery = append(symbolsToQuery, sym)
+				}
 			}
 			if len(symbolsToQuery) == 0 {
 				log.Printf("  ℹ️  [委托查询] 没有持仓，跳过计划委托查询")
@@ -1237,13 +1330,19 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 
 	// 对每个交易对查询计划委托（使用 profit_loss 一次性获取所有 TP/SL）
 	for _, sym := range symbolsToQuery {
-		planParams := map[string]string{
-			"productType": "usdt-futures",
-			"planType":    "profit_loss", // ⚠️ 使用 profit_loss 查询所有 TP/SL 订单
-			"symbol":      sym,
+		buildParams := func(productType string) map[string]string {
+			return map[string]string{
+				"productType": productType,
+				"planType":    "profit_loss",
+				"symbol":      sym,
+			"marginCoin":  "USDT",
+		}
 		}
 
-		planBody, err := t.request("GET", "/api/v2/mix/order/orders-plan-pending", planParams, nil)
+		planBody, err := t.request("GET", "/api/v2/mix/order/orders-plan-pending", buildParams("usdt-futures"), nil)
+		if err != nil {
+			planBody, err = t.request("GET", "/api/v2/mix/order/orders-plan-pending", buildParams("USDT-FUTURES"), nil)
+		}
 
 		if err != nil {
 			// 忽略部分错误，继续查询下一个
@@ -1262,9 +1361,25 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 					TriggerPrice string `json:"triggerPrice"`
 					Size         string `json:"size"`
 					HoldSide     string `json:"holdSide"`
+					ReduceOnly   string `json:"reduceOnly"`
+					MarginCoin   string `json:"marginCoin"`
+					MarginMode   string `json:"marginMode"`
 					Status       string `json:"status"`
 					CTime        string `json:"cTime"`
 				} `json:"entrustedList"`
+				OrderList []struct {
+					OrderId      string `json:"orderId"`
+					Symbol       string `json:"symbol"`
+					PlanType     string `json:"planType"`
+					TriggerPrice string `json:"triggerPrice"`
+					Size         string `json:"size"`
+					HoldSide     string `json:"holdSide"`
+					ReduceOnly   string `json:"reduceOnly"`
+					MarginCoin   string `json:"marginCoin"`
+					MarginMode   string `json:"marginMode"`
+					Status       string `json:"status"`
+					CTime        string `json:"cTime"`
+				} `json:"orderList"`
 			} `json:"data"`
 		}
 
@@ -1283,9 +1398,40 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 			continue
 		}
 
-		log.Printf("✓ [委托查询] 计划委托: %s 找到 %d 个", sym, len(planResp.Data.EntrustedList))
+		planList := planResp.Data.EntrustedList
+		if len(planList) == 0 && len(planResp.Data.OrderList) > 0 {
+			for _, p := range planResp.Data.OrderList {
+				planList = append(planList, struct {
+					OrderId      string `json:"orderId"`
+					Symbol       string `json:"symbol"`
+					PlanType     string `json:"planType"`
+					TriggerPrice string `json:"triggerPrice"`
+					Size         string `json:"size"`
+					HoldSide     string `json:"holdSide"`
+					ReduceOnly   string `json:"reduceOnly"`
+					MarginCoin   string `json:"marginCoin"`
+					MarginMode   string `json:"marginMode"`
+					Status       string `json:"status"`
+					CTime        string `json:"cTime"`
+				}{
+					OrderId:      p.OrderId,
+					Symbol:       p.Symbol,
+					PlanType:     p.PlanType,
+					TriggerPrice: p.TriggerPrice,
+					Size:         p.Size,
+					HoldSide:     p.HoldSide,
+					ReduceOnly:   p.ReduceOnly,
+					MarginCoin:   p.MarginCoin,
+					MarginMode:   p.MarginMode,
+					Status:       p.Status,
+					CTime:        p.CTime,
+				})
+			}
+		}
 
-		for _, plan := range planResp.Data.EntrustedList {
+		log.Printf("✓ [委托查询] 计划委托: %s 找到 %d 个", sym, len(planList))
+
+		for _, plan := range planList {
 			triggerPrice, _ := strconv.ParseFloat(plan.TriggerPrice, 64)
 			quantity, _ := strconv.ParseFloat(plan.Size, 64)
 
@@ -1305,6 +1451,9 @@ func (t *BitgetTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, e
 				"price":      triggerPrice,
 				"quantity":   quantity,
 				"side":       plan.HoldSide,
+				"reduce_only": strings.EqualFold(plan.ReduceOnly, "YES") || strings.EqualFold(plan.ReduceOnly, "true"),
+				"margin_coin": plan.MarginCoin,
+				"margin_mode": plan.MarginMode,
 				"status":     plan.Status,
 				"created_at": plan.CTime,
 				// 增加计划单特有标识
