@@ -733,3 +733,18 @@
 {"level":"info","ts":"2026-01-13T15:30:05.247+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"btc_eth_leverage","value":"5"}
 {"level":"info","ts":"2026-01-13T15:30:05.248+0800","caller":"logger/logger.go:84","msg":"✅ config.json同步完成"}
 {"level":"info","ts":"2026-01-13T15:30:05.248+0800","caller":"logger/logger.go:84","msg":"🔄 发现内测码文件，开始加载...","file":"beta_codes.txt","size_kb":4}
+{"level":"info","ts":"2026-01-19T15:09:20.394+0800","caller":"logger/logger.go:84","msg":"🔄 开始同步config.json到数据库..."}
+{"level":"info","ts":"2026-01-19T15:09:20.674+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"coin_pool_api_url","value":""}
+{"level":"info","ts":"2026-01-19T15:09:20.964+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"stop_trading_minutes","value":"60"}
+{"level":"info","ts":"2026-01-19T15:09:21.263+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"default_coins","value":"[\"BTCUSDT\",\"ETHUSDT\",\"SOLUSDT\",\"BNBUSDT\",\"XRPUSDT\",\"DOGEUSDT\",\"ADAUSDT\",\"HYPEUSDT\"]"}
+{"level":"info","ts":"2026-01-19T15:09:21.539+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"btc_eth_leverage","value":"5"}
+{"level":"info","ts":"2026-01-19T15:09:21.815+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"jwt_secret","value":"Qk0kAa+d0iIEzXVHXbNbm+UaN3RNabmWtH8rDWZ5OPf+4GX8pBflAHodfpbipVMyrw1fsDanHsNBjhgbDeK9Jg=="}
+{"level":"info","ts":"2026-01-19T15:09:22.097+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"beta_mode","value":"false"}
+{"level":"info","ts":"2026-01-19T15:09:22.371+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"api_server_port","value":"8080"}
+{"level":"info","ts":"2026-01-19T15:09:22.651+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"use_default_coins","value":"true"}
+{"level":"info","ts":"2026-01-19T15:09:22.925+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"oi_top_api_url","value":""}
+{"level":"info","ts":"2026-01-19T15:09:23.203+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"max_daily_loss","value":"10.0"}
+{"level":"info","ts":"2026-01-19T15:09:23.481+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"max_drawdown","value":"20.0"}
+{"level":"info","ts":"2026-01-19T15:09:23.763+0800","caller":"logger/logger.go:84","msg":"✓ 同步配置","key":"altcoin_leverage","value":"5"}
+{"level":"info","ts":"2026-01-19T15:09:23.763+0800","caller":"logger/logger.go:84","msg":"✅ config.json同步完成"}
+{"level":"info","ts":"2026-01-19T15:09:23.763+0800","caller":"logger/logger.go:84","msg":"🔄 发现内测码文件，开始加载...","file":"beta_codes.txt","size_kb":4}

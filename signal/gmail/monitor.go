@@ -128,6 +128,7 @@ func (m *Monitor) CheckEmails() error {
 		since = m.lastCheck
 	}
 	criteria.Since = since
+	log.Printf("📧 [gmail] scanning inbox since=%s user=%s", since.Format(time.RFC3339), m.config.User)
 	// 增加搜索条件：标题包含 "Web3团队"
 	// 注意：有些 IMAP 服务器对中文搜索支持不一，如果失效可以去掉
 	// criteria.Header.Add("Subject", "Web3团队")
@@ -138,6 +139,7 @@ func (m *Monitor) CheckEmails() error {
 	}
 
 	if len(uids) == 0 {
+		log.Printf("📧 [gmail] no emails found since=%s", since.Format(time.RFC3339))
 		return nil
 	}
 
@@ -182,7 +184,9 @@ func (m *Monitor) CheckEmails() error {
 
 		// 2. 预判是否可能是策略邮件（不论是否白名单，都先初筛标题或发件人名，减少正文下载压力）
 		// 注意：正文下载后的“关键词检查”才是最终防线
+		// 放宽预筛选：避免标题/显示名略有变化导致漏掉策略邮件
 		isPotentialStrategy := strings.Contains(subject, "Web3团队发布") ||
+			strings.Contains(subject, "Web3团队") ||
 			strings.Contains(fromName, "Web3团队") ||
 			isWhitelisted
 

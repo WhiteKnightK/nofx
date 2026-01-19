@@ -95,6 +95,8 @@ func InitGlobalManager(mcpClient *mcp.Client) error {
 		return nil
 	}
 
+	log.Printf("📧 Gmail credentials loaded: user=%s password_set=%v", gmailUser, gmailPass != "")
+
 	// 构造配置
 	cfg := &config.GmailConfig{
 		Enabled:  true,
