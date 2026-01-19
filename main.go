@@ -374,8 +374,12 @@ func main() {
 	if err := mysignal.InitGlobalManager(globalMCP); err != nil {
 		log.Printf("⚠️ 信号管理器初始化失败: %v", err)
 	} else {
-		mysignal.GlobalManager.Start()
-		defer mysignal.GlobalManager.Stop()
+		if mysignal.GlobalManager != nil {
+			mysignal.GlobalManager.Start()
+			defer mysignal.GlobalManager.Stop()
+		} else {
+			log.Printf("⚠️ Global strategy manager is not initialized; email polling is disabled (missing Gmail config).")
+		}
 	}
 
 	// 创建TraderManager

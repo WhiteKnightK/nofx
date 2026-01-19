@@ -72,6 +72,24 @@ func InitGlobalManager(mcpClient *mcp.Client) error {
 		gmailPass = os.Getenv("EMAIL_PASSWORD")
 	}
 
+	// 环境变量缺失时，从 system_config 兜底读取（便于在 Web 里配置后无需改环境变量）
+	if (gmailUser == "" || gmailPass == "") && config.GlobalDB != nil {
+		if gmailUser == "" {
+			if v, _ := config.GlobalDB.GetSystemConfig("gmail_user"); v != "" {
+				gmailUser = v
+			} else if v2, _ := config.GlobalDB.GetSystemConfig("email_user"); v2 != "" {
+				gmailUser = v2
+			}
+		}
+		if gmailPass == "" {
+			if v, _ := config.GlobalDB.GetSystemConfig("gmail_password"); v != "" {
+				gmailPass = v
+			} else if v2, _ := config.GlobalDB.GetSystemConfig("email_password"); v2 != "" {
+				gmailPass = v2
+			}
+		}
+	}
+
 	if gmailUser == "" || gmailPass == "" {
 		log.Println("⚠️ 未配置 GMAIL_USER/PASSWORD，信号模式将不可用")
 		return nil

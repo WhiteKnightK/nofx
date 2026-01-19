@@ -486,9 +486,114 @@ type AutoTrader struct {
 	database              interface{}        // 数据库引用（用于自动更新余额）
 	userID                string             // 用户ID
 	repairAICooldown      sync.Map           // 策略修复AI调用限频 (strategyID -> time.Time)
+	closedStrategyCache   sync.Map           // 已关闭策略缓存 (strategyID -> bool)，用于快速跳过补单/检查
 
 	// 信号模式状态
 	lastExecutedSignalID string // 上次执行的信号ID
+}
+
+// markStrategyClosed 【功能】将策略标记为已关闭（避免后续继续补单/检查）
+func (at *AutoTrader) markStrategyClosed(strategyID string) {
+	if at == nil || strategyID == "" {
+		return
+	}
+	at.closedStrategyCache.Store(strategyID, true)
+}
+
+// isStrategyClosed 【功能】判断策略是否已关闭
+func (at *AutoTrader) isStrategyClosed(strategyID string) bool {
+	if at == nil || strategyID == "" {
+		return false
+	}
+	v, ok := at.closedStrategyCache.Load(strategyID)
+	if !ok {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
+}
+
+// hydrateClosedStrategiesFromDB 【功能】启动时从数据库恢复已关闭策略缓存
+func (at *AutoTrader) hydrateClosedStrategiesFromDB() {
+	if at == nil || at.database == nil {
+		return
+	}
+	db, ok := at.database.(*sysconfig.Database)
+	if !ok {
+		return
+	}
+	statuses, err := db.GetTraderStrategyStatuses(at.id)
+	if err != nil {
+		return
+	}
+	for _, s := range statuses {
+		if s == nil {
+			continue
+		}
+		if strings.ToUpper(strings.TrimSpace(s.Status)) == "CLOSED" {
+			at.markStrategyClosed(s.StrategyID)
+		}
+	}
+}
+
+// auditPositionsAndCloseFinishedStrategies 【功能】定时对账：若策略曾进入持仓阶段但当前仓位为0，则关闭该策略
+func (at *AutoTrader) auditPositionsAndCloseFinishedStrategies() {
+	if at == nil || at.database == nil {
+		return
+	}
+	db, ok := at.database.(*sysconfig.Database)
+	if !ok {
+		return
+	}
+
+	statuses, err := db.GetTraderStrategyStatuses(at.id)
+	if err != nil || len(statuses) == 0 {
+		return
+	}
+
+	positions, err := at.trader.GetPositions()
+	if err != nil {
+		return
+	}
+	posQtyBySymbol := make(map[string]float64)
+	for _, p := range positions {
+		sym, _ := p["symbol"].(string)
+		sym = strings.ToUpper(strings.TrimSpace(sym))
+		if sym == "" {
+			continue
+		}
+		amt, _ := p["positionAmt"].(float64)
+		if amt == 0 {
+			continue
+		}
+		posQtyBySymbol[sym] = math.Abs(amt)
+	}
+
+	for _, st := range statuses {
+		if st == nil {
+			continue
+		}
+		statusUpper := strings.ToUpper(strings.TrimSpace(st.Status))
+		if statusUpper == "" || statusUpper == "WAITING" || statusUpper == "CLOSED" {
+			continue
+		}
+		if at.isStrategyClosed(st.StrategyID) {
+			continue
+		}
+
+		sym := strings.ToUpper(strings.TrimSpace(st.Symbol))
+		if sym == "" {
+			continue
+		}
+		if qty, ok := posQtyBySymbol[sym]; ok && qty > 0 {
+			continue
+		}
+
+		at.updateStrategyStatus(st.StrategyID, sym, "CLOSED", 0, 0, 0)
+		at.markStrategyClosed(st.StrategyID)
+		log.Printf("[position-audit] strategy closed due to missing position: trader=%s strategy=%s symbol=%s prev_status=%s",
+			at.id, st.StrategyID, sym, st.Status)
+	}
 }
 
 // syncTraderConfigFromDB 【功能】从数据库同步运行中交易员配置（用于信号模式实时生效）
@@ -2546,10 +2651,20 @@ func (at *AutoTrader) RunSignalMode() error {
 	reconcileTicker := time.NewTicker(20 * time.Second)
 	defer reconcileTicker.Stop()
 
+	// ⚡️ 仓位对账定时器（30分钟）：若仓位已消失则关闭策略，避免继续跑
+	positionAuditTicker := time.NewTicker(30 * time.Minute)
+	defer positionAuditTicker.Stop()
+
+	// 启动时恢复已关闭策略缓存
+	at.hydrateClosedStrategiesFromDB()
+
 	// ⚡️ 策略更新监听：策略一到就立刻触发一次（避免“更新了不触发”）
 	if signal.GlobalManager != nil {
 		signal.GlobalManager.RegisterListener(func(newStrat, prev *signal.SignalDecision) {
 			if newStrat == nil {
+				return
+			}
+			if at.isStrategyClosed(newStrat.SignalID) {
 				return
 			}
 			receivedAt := at.getStrategyReceivedAt(newStrat.SignalID)
@@ -2575,12 +2690,18 @@ func (at *AutoTrader) RunSignalMode() error {
 				if snap == nil || snap.Strategy == nil {
 					continue
 				}
+				if at.isStrategyClosed(snap.Strategy.SignalID) {
+					continue
+				}
 				diff, report, missing, missingSL, missingTP := at.detectStrategyDiffFromExchange(snap.Strategy, snap.Time)
 				if diff && at.shouldTriggerRepairAI(snap.Strategy.SignalID) {
 					log.Printf("[signal-audit] diff detected symbol=%s id=%s; triggering ai repair", snap.Strategy.Symbol, snap.Strategy.SignalID)
 					at.CheckAndExecuteStrategyWithAI(snap.Strategy, report, missing, missingSL, missingTP)
 				}
 			}
+
+		case <-positionAuditTicker.C:
+			at.auditPositionsAndCloseFinishedStrategies()
 
 		case <-ticker.C:
 			// 如果全局管理器未初始化或未启动，等待
@@ -2905,6 +3026,9 @@ func (at *AutoTrader) placeMissingLimitOrdersFallback(
 
 // CheckAndExecuteStrategyWithAI 【功能】发现差异后调用AI，让AI依据当前委托+历史委托决定如何补齐
 func (at *AutoTrader) CheckAndExecuteStrategyWithAI(strat *signal.SignalDecision, extraDirective string, missing []expectedPoint, missingSL, missingTP bool) {
+	if strat != nil && at.isStrategyClosed(strat.SignalID) {
+		return
+	}
 	// 信号模式：每次执行前从DB同步最新配置，确保配置面板修改立即生效
 	at.syncTraderConfigFromDB()
 
@@ -3366,7 +3490,7 @@ func (at *AutoTrader) executeAIAction(result AIExecutionResult, strat *signal.Si
 		if strings.Contains(result.Action, "OPEN") || strings.Contains(result.Action, "ADD") {
 			at.setStrategySLTP(strat, quantity)
 			// 更新状态到数据库
-			at.updateStrategyStatus(strat.SignalID, result.Action, currentPrice, quantity, 0)
+			at.updateStrategyStatus(strat.SignalID, strat.Symbol, result.Action, currentPrice, quantity, 0)
 
 			// 【新增】启动延迟二次检查 (等待成交和交易所状态更新)
 			go func() {
@@ -3376,7 +3500,8 @@ func (at *AutoTrader) executeAIAction(result AIExecutionResult, strat *signal.Si
 			}()
 		} else if strings.Contains(result.Action, "CLOSE") {
 			// 平仓更新状态
-			at.updateStrategyStatus(strat.SignalID, "CLOSED", 0, 0, 0)
+			at.updateStrategyStatus(strat.SignalID, strat.Symbol, "CLOSED", 0, 0, 0)
+			at.markStrategyClosed(strat.SignalID)
 		}
 	}
 }
@@ -3412,7 +3537,7 @@ func (at *AutoTrader) setStrategySLTP(strat *signal.SignalDecision, quantity flo
 }
 
 // updateStrategyStatus 更新策略执行状态到数据库
-func (at *AutoTrader) updateStrategyStatus(stratID, status string, entryPrice, quantity, realizedPnL float64) {
+func (at *AutoTrader) updateStrategyStatus(stratID, symbol, status string, entryPrice, quantity, realizedPnL float64) {
 	if at.database == nil {
 		return
 	}
@@ -3421,6 +3546,7 @@ func (at *AutoTrader) updateStrategyStatus(stratID, status string, entryPrice, q
 		s := &sysconfig.TraderStrategyStatus{
 			TraderID:    at.id,
 			StrategyID:  stratID,
+			Symbol:      symbol,
 			Status:      status,
 			EntryPrice:  entryPrice,
 			Quantity:    quantity,
