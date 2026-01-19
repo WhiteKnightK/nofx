@@ -238,7 +238,7 @@ func (m *Monitor) CheckEmails() error {
 	// 2. 第二步：只针对目标邮件，下载正文（这里使用 UIDFetch，避免 UID/Seq 混用导致漏邮件）
 	log.Printf("📥 开始批量下载邮件正文，共 %d 封目标邮件...", len(targetUids.Set))
 	section := &imap.BodySectionName{}
-	bodyItems := []imap.FetchItem{section.FetchItem(), imap.FetchUid}
+	bodyItems := []imap.FetchItem{section.FetchItem(), imap.FetchUid, imap.FetchInternalDate}
 	// 增加缓冲大小，防止 fetch 阻塞
 	bodyMessages := make(chan *imap.Message, len(targetUids.Set)+10)
 	bodyDone := make(chan error, 1)
@@ -269,9 +269,15 @@ func (m *Monitor) CheckEmails() error {
 		// 【去重】这里才真正标记“已处理”，确保只有在成功解析正文并投递到通道后，
 		// 才会被视为已消费。否则如果在下载/解析阶段出错，就会导致邮件永久丢失。
 		// 这里才检查是否已处理过
-		receivedAt := envelope.Date
-		if t, ok := uidToInternalDate[msg.Uid]; ok && !t.IsZero() {
+		receivedAt := time.Time{}
+		if !msg.InternalDate.IsZero() {
+			receivedAt = msg.InternalDate
+			uidToInternalDate[msg.Uid] = msg.InternalDate
+		} else if t, ok := uidToInternalDate[msg.Uid]; ok && !t.IsZero() {
 			receivedAt = t
+		} else {
+			receivedAt = envelope.Date
+			log.Printf("WARN: missing INTERNALDATE; falling back to header Date (uid=%d subject=%q headerDate=%s)", msg.Uid, envelope.Subject, envelope.Date.Format(time.RFC3339))
 		}
 		m.mu.Lock()
 		if m.processedCache[messageID] {
