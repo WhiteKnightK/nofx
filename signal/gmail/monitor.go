@@ -158,6 +158,7 @@ func (m *Monitor) CheckEmails() error {
 	targetUids := new(imap.SeqSet)
 	uidToEnvelope := make(map[uint32]*imap.Envelope)
 	uidToInternalDate := make(map[uint32]time.Time)
+	uidToMessageID := make(map[uint32]string)
 
 	for msg := range messages {
 		// 防御性检查：避免底层返回 nil 消息导致后续解引用 panic
@@ -193,12 +194,35 @@ func (m *Monitor) CheckEmails() error {
 			isWhitelisted
 
 		if isPotentialStrategy {
+			// 【功能】邮件唯一标识：优先使用 Message-ID；若为空则使用 UID 兜底
+			messageID := msg.Envelope.MessageId
+			if messageID == "" {
+				messageID = fmt.Sprintf("uid_%d", msg.Uid)
+			}
+
+			// 【功能】持久化去重：避免重启后反复对同一封邮件调用 AI
+			m.mu.Lock()
+			if m.processedCache[messageID] {
+				m.mu.Unlock()
+				continue
+			}
+			m.mu.Unlock()
+			if config.GlobalDB != nil {
+				if exists, err := config.GlobalDB.ParsedSignalExists(messageID); err == nil && exists {
+					m.mu.Lock()
+					m.processedCache[messageID] = true
+					m.mu.Unlock()
+					continue
+				}
+			}
+
 			targetUids.AddNum(msg.Uid)
 			log.Printf("targetUids: %v", targetUids)
 			uidToEnvelope[msg.Uid] = msg.Envelope
 			if !msg.InternalDate.IsZero() {
 				uidToInternalDate[msg.Uid] = msg.InternalDate
 			}
+			uidToMessageID[msg.Uid] = messageID
 			log.Printf("🎯 发现目标邮件(待下载): [%s] <%s> %s (白名单: %v)", fromName, fromEmail, subject, isWhitelisted)
 		}
 	}
@@ -234,6 +258,14 @@ func (m *Monitor) CheckEmails() error {
 			continue
 		}
 
+		messageID := uidToMessageID[msg.Uid]
+		if messageID == "" {
+			messageID = envelope.MessageId
+		}
+		if messageID == "" {
+			messageID = fmt.Sprintf("uid_%d", msg.Uid)
+		}
+
 		// 【去重】这里才真正标记“已处理”，确保只有在成功解析正文并投递到通道后，
 		// 才会被视为已消费。否则如果在下载/解析阶段出错，就会导致邮件永久丢失。
 		// 这里才检查是否已处理过
@@ -241,9 +273,8 @@ func (m *Monitor) CheckEmails() error {
 		if t, ok := uidToInternalDate[msg.Uid]; ok && !t.IsZero() {
 			receivedAt = t
 		}
-		fingerprint := fmt.Sprintf("%s|%s", envelope.Subject, receivedAt.Format(time.RFC3339))
 		m.mu.Lock()
-		if m.processedCache[fingerprint] {
+		if m.processedCache[messageID] {
 			m.mu.Unlock()
 			fromName := ""
 			if len(envelope.From) > 0 {
@@ -329,7 +360,7 @@ func (m *Monitor) CheckEmails() error {
 					envelope.Subject, isWhitelisted, hasKeywords, hasSecret)
 				// 即使无效也标记为已处理，防止下一轮反复扫描无效邮件
 				m.mu.Lock()
-				m.processedCache[fingerprint] = true
+				m.processedCache[messageID] = true
 				m.mu.Unlock()
 				continue
 			}
@@ -337,7 +368,7 @@ func (m *Monitor) CheckEmails() error {
 			log.Printf("✅ 成功提取正文 (长度: %d) -> 推送到解析队列: %s", len(body), envelope.Subject)
 			// 只有在真正拿到正文并成功构造 Email 之后，才标记为已处理
 			m.mu.Lock()
-			m.processedCache[fingerprint] = true
+			m.processedCache[messageID] = true
 			m.mu.Unlock()
 
 			// 发送到通道
@@ -350,10 +381,7 @@ func (m *Monitor) CheckEmails() error {
 				Subject:   envelope.Subject,
 				From:      fromName,
 				Date:      receivedAt,
-				MessageID: envelope.MessageId,
-			}
-			if email.MessageID == "" {
-				email.MessageID = fmt.Sprintf("uid_%d", msg.Uid)
+				MessageID: messageID,
 			}
 			m.SignalChan <- email
 
