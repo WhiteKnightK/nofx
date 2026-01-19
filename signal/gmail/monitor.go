@@ -146,7 +146,8 @@ func (m *Monitor) CheckEmails() error {
 	// 1. 第一步：只获取信封（标题、发件人、日期），不下载正文
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uids...)
-	items := []imap.FetchItem{imap.FetchEnvelope, imap.FetchUid}
+	// 【功能】优先使用 INTERNALDATE（服务器接收时间）作为策略时间戳，避免邮件头 Date 被发件方写成旧时间导致误判“过期”
+	items := []imap.FetchItem{imap.FetchEnvelope, imap.FetchUid, imap.FetchInternalDate}
 
 	messages := make(chan *imap.Message, 50)
 	done := make(chan error, 1)
@@ -156,6 +157,7 @@ func (m *Monitor) CheckEmails() error {
 
 	targetUids := new(imap.SeqSet)
 	uidToEnvelope := make(map[uint32]*imap.Envelope)
+	uidToInternalDate := make(map[uint32]time.Time)
 
 	for msg := range messages {
 		// 防御性检查：避免底层返回 nil 消息导致后续解引用 panic
@@ -194,6 +196,9 @@ func (m *Monitor) CheckEmails() error {
 			targetUids.AddNum(msg.Uid)
 			log.Printf("targetUids: %v", targetUids)
 			uidToEnvelope[msg.Uid] = msg.Envelope
+			if !msg.InternalDate.IsZero() {
+				uidToInternalDate[msg.Uid] = msg.InternalDate
+			}
 			log.Printf("🎯 发现目标邮件(待下载): [%s] <%s> %s (白名单: %v)", fromName, fromEmail, subject, isWhitelisted)
 		}
 	}
@@ -232,7 +237,11 @@ func (m *Monitor) CheckEmails() error {
 		// 【去重】这里才真正标记“已处理”，确保只有在成功解析正文并投递到通道后，
 		// 才会被视为已消费。否则如果在下载/解析阶段出错，就会导致邮件永久丢失。
 		// 这里才检查是否已处理过
-		fingerprint := fmt.Sprintf("%s|%s", envelope.Subject, envelope.Date.Format(time.RFC3339))
+		receivedAt := envelope.Date
+		if t, ok := uidToInternalDate[msg.Uid]; ok && !t.IsZero() {
+			receivedAt = t
+		}
+		fingerprint := fmt.Sprintf("%s|%s", envelope.Subject, receivedAt.Format(time.RFC3339))
 		m.mu.Lock()
 		if m.processedCache[fingerprint] {
 			m.mu.Unlock()
@@ -241,7 +250,7 @@ func (m *Monitor) CheckEmails() error {
 				fromName = envelope.From[0].PersonalName
 			}
 			log.Printf("⏭ 跳过重复邮件 [%d/%d]: %s (接收时间: %s, 发布者: %s)",
-				processedCount, len(targetUids.Set), envelope.Subject, envelope.Date.Format(time.RFC3339), fromName)
+				processedCount, len(targetUids.Set), envelope.Subject, receivedAt.Format(time.RFC3339), fromName)
 			continue
 		}
 		m.mu.Unlock()
@@ -340,7 +349,7 @@ func (m *Monitor) CheckEmails() error {
 				Body:      body,
 				Subject:   envelope.Subject,
 				From:      fromName,
-				Date:      envelope.Date, // 使用邮件原始接收时间
+				Date:      receivedAt,
 				MessageID: envelope.MessageId,
 			}
 			if email.MessageID == "" {
