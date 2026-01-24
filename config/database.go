@@ -314,6 +314,7 @@ func (d *Database) createTables(isMySQL bool) error {
 			trader_id TEXT NOT NULL,
 			strategy_id TEXT DEFAULT '',
 			symbol TEXT DEFAULT '',
+			had_position BOOLEAN DEFAULT 0,
 			status TEXT DEFAULT 'WAITING', -- WAITING, ENTRY, ADD_1, ADD_2, CLOSED
 			entry_price REAL DEFAULT 0,
 			quantity REAL DEFAULT 0,
@@ -469,6 +470,7 @@ func (d *Database) createTables(isMySQL bool) error {
 		`ALTER TABLE strategy_decision_history ADD COLUMN system_prompt TEXT DEFAULT ''`,
 		`ALTER TABLE strategy_decision_history ADD COLUMN input_prompt TEXT DEFAULT ''`,
 		`ALTER TABLE strategy_decision_history ADD COLUMN raw_ai_response TEXT DEFAULT ''`,
+		`ALTER TABLE trader_strategy_status ADD COLUMN had_position BOOLEAN DEFAULT 0`,
 		// 多用户观测系统扩展字段
 		`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`,              // 用户角色: 'admin' | 'user' | 'group_leader' | 'trader_account'
 		`ALTER TABLE users ADD COLUMN trader_id TEXT DEFAULT NULL`,           // 交易员账号关联的交易员ID
@@ -2298,6 +2300,7 @@ type TraderStrategyStatus struct {
 	TraderID    string    `json:"trader_id"`
 	StrategyID  string    `json:"strategy_id"`
 	Symbol      string    `json:"symbol"` // 新增字段
+	HadPosition *bool     `json:"had_position,omitempty"`
 	Status      string    `json:"status"`
 	EntryPrice  float64   `json:"entry_price"`
 	Quantity    float64   `json:"quantity"`
@@ -2345,10 +2348,11 @@ func (d *Database) UpdateTraderStrategyStatus(status *TraderStrategyStatus) erro
 	var query string
 	if d.isMySQL {
 		query = `
-			INSERT INTO trader_strategy_status (trader_id, strategy_id, symbol, status, entry_price, quantity, realized_pnl, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO trader_strategy_status (trader_id, strategy_id, symbol, had_position, status, entry_price, quantity, realized_pnl, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE
 			symbol=VALUES(symbol),
+			had_position=COALESCE(VALUES(had_position), had_position),
 			status=VALUES(status),
 			entry_price=VALUES(entry_price),
 			quantity=VALUES(quantity),
@@ -2357,10 +2361,11 @@ func (d *Database) UpdateTraderStrategyStatus(status *TraderStrategyStatus) erro
 		`
 	} else {
 		query = `
-			INSERT INTO trader_strategy_status (trader_id, strategy_id, symbol, status, entry_price, quantity, realized_pnl, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO trader_strategy_status (trader_id, strategy_id, symbol, had_position, status, entry_price, quantity, realized_pnl, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(trader_id, strategy_id) DO UPDATE SET
 			symbol=excluded.symbol,
+			had_position=COALESCE(excluded.had_position, had_position),
 			status=excluded.status,
 			entry_price=excluded.entry_price,
 			quantity=excluded.quantity,
@@ -2369,13 +2374,13 @@ func (d *Database) UpdateTraderStrategyStatus(status *TraderStrategyStatus) erro
 		`
 	}
 
-	_, err := d.db.Exec(query, status.TraderID, status.StrategyID, status.Symbol, status.Status, status.EntryPrice, status.Quantity, status.RealizedPnL, time.Now())
+	_, err := d.db.Exec(query, status.TraderID, status.StrategyID, status.Symbol, status.HadPosition, status.Status, status.EntryPrice, status.Quantity, status.RealizedPnL, time.Now())
 	return err
 }
 
 // GetTraderStrategyStatuses 获取交易员的所有策略状态
 func (d *Database) GetTraderStrategyStatuses(traderID string) ([]*TraderStrategyStatus, error) {
-	query := `SELECT id, trader_id, strategy_id, symbol, status, entry_price, quantity, realized_pnl, updated_at FROM trader_strategy_status WHERE trader_id = ?`
+	query := `SELECT id, trader_id, strategy_id, symbol, had_position, status, entry_price, quantity, realized_pnl, updated_at FROM trader_strategy_status WHERE trader_id = ?`
 	rows, err := d.db.Query(query, traderID)
 	if err != nil {
 		return nil, err
@@ -2385,8 +2390,13 @@ func (d *Database) GetTraderStrategyStatuses(traderID string) ([]*TraderStrategy
 	var results []*TraderStrategyStatus
 	for rows.Next() {
 		var s TraderStrategyStatus
-		if err := rows.Scan(&s.ID, &s.TraderID, &s.StrategyID, &s.Symbol, &s.Status, &s.EntryPrice, &s.Quantity, &s.RealizedPnL, &s.UpdatedAt); err != nil {
+		var hadPos sql.NullBool
+		if err := rows.Scan(&s.ID, &s.TraderID, &s.StrategyID, &s.Symbol, &hadPos, &s.Status, &s.EntryPrice, &s.Quantity, &s.RealizedPnL, &s.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if hadPos.Valid {
+			v := hadPos.Bool
+			s.HadPosition = &v
 		}
 		results = append(results, &s)
 	}

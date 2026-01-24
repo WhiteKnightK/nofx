@@ -50,6 +50,11 @@ func NewMySQLDatabase(dsn string) (*Database, error) {
 		log.Printf("⚠️ 迁移 trader_strategy_status 增加 symbol 列失败(非致命): %v", err)
 	}
 
+	// 【新增】自动迁移 trader_strategy_status 增加 had_position 列
+	if err := database.migrateTraderStrategyStatusAddHadPosition(); err != nil {
+		log.Printf("⚠️ 迁移 trader_strategy_status 增加 had_position 列失败(非致命): %v", err)
+	}
+
 	// 【新增】自动迁移 strategy_orders 增加 leverage 列
 	if err := database.migrateStrategyOrdersAddLeverage(); err != nil {
 		log.Printf("⚠️ 迁移 strategy_orders 增加 leverage 列失败(非致命): %v", err)
@@ -217,6 +222,7 @@ func (d *Database) createMySQLTables() error {
 			trader_id VARCHAR(255) NOT NULL,
 			strategy_id VARCHAR(255) NOT NULL DEFAULT '',
 			symbol VARCHAR(50) NOT NULL DEFAULT '',
+			had_position TINYINT(1) DEFAULT 0,
 			status VARCHAR(50) DEFAULT 'WAITING', -- WAITING, ENTRY, ADD_1, ADD_2, CLOSED
 			entry_price DOUBLE DEFAULT 0,
 			quantity DOUBLE DEFAULT 0,
@@ -380,6 +386,32 @@ func (d *Database) migrateTraderStrategyStatusAddSymbol() error {
 		return fmt.Errorf("添加 symbol 列失败: %w", err)
 	}
 	log.Println("✅ trader_strategy_status 增加 symbol 列迁移完成")
+	return nil
+}
+
+// migrateTraderStrategyStatusAddHadPosition 为 trader_strategy_status 增加 had_position 列
+func (d *Database) migrateTraderStrategyStatusAddHadPosition() error {
+	var count int
+	err := d.db.QueryRow(`
+		SELECT COUNT(*) 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+		  AND TABLE_NAME = 'trader_strategy_status' 
+		  AND COLUMN_NAME = 'had_position'
+	`).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil // 已存在
+	}
+
+	log.Println("🔄 开始迁移 trader_strategy_status 增加 had_position 列...")
+	_, err = d.db.Exec("ALTER TABLE trader_strategy_status ADD COLUMN had_position TINYINT(1) DEFAULT 0 AFTER symbol")
+	if err != nil {
+		return fmt.Errorf("添加 had_position 列失败: %w", err)
+	}
+	log.Println("✅ trader_strategy_status 增加 had_position 列迁移完成")
 	return nil
 }
 

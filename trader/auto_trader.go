@@ -573,10 +573,6 @@ func (at *AutoTrader) auditPositionsAndCloseFinishedStrategies() {
 		if st == nil {
 			continue
 		}
-		statusUpper := strings.ToUpper(strings.TrimSpace(st.Status))
-		if statusUpper == "" || statusUpper == "WAITING" || statusUpper == "CLOSED" {
-			continue
-		}
 		if at.isStrategyClosed(st.StrategyID) {
 			continue
 		}
@@ -585,13 +581,49 @@ func (at *AutoTrader) auditPositionsAndCloseFinishedStrategies() {
 		if sym == "" {
 			continue
 		}
-		if qty, ok := posQtyBySymbol[sym]; ok && qty > 0 {
+
+		statusUpper := strings.ToUpper(strings.TrimSpace(st.Status))
+		if statusUpper == "CLOSED" {
+			at.markStrategyClosed(st.StrategyID)
 			continue
+		}
+
+		hadPos := false
+		if st.HadPosition != nil {
+			hadPos = *st.HadPosition
+		}
+
+		if qty, ok := posQtyBySymbol[sym]; ok && qty > 0 {
+			// 发现实际持仓：标记策略已进入持仓阶段（无论此前状态是否 WAITING）
+			if !hadPos {
+				v := true
+				st.HadPosition = &v
+				// 如果此前是 WAITING，改为 ENTERED，便于前端/排查
+				if statusUpper == "" || statusUpper == "WAITING" {
+					st.Status = "ENTERED"
+				}
+				if err := db.UpdateTraderStrategyStatus(st); err != nil {
+					log.Printf("WARN: failed to mark had_position: trader=%s strategy=%s symbol=%s err=%v", at.id, st.StrategyID, sym, err)
+				}
+			}
+			continue
+		}
+
+		// 没有持仓：只有当该策略“曾经持仓”时，才判定策略结束并撤销挂单
+		if !hadPos {
+			continue
+		}
+
+		errNormal := at.trader.CancelAllOrders(sym)
+		errStops := at.trader.CancelStopOrders(sym)
+		if errNormal != nil || errStops != nil {
+			log.Printf("WARN: cancel orders on strategy close: trader=%s strategy=%s symbol=%s err_normal=%v err_stops=%v",
+				at.id, st.StrategyID, sym, errNormal, errStops)
 		}
 
 		at.updateStrategyStatus(st.StrategyID, sym, "CLOSED", 0, 0, 0)
 		at.markStrategyClosed(st.StrategyID)
-		log.Printf("[position-audit] strategy closed due to missing position: trader=%s strategy=%s symbol=%s prev_status=%s",
+		log.Printf("[position-audit] strategy closed and orders canceled due to missing position: trader=%s strategy=%s symbol=%s prev_status=%s",
 			at.id, st.StrategyID, sym, st.Status)
 	}
 }

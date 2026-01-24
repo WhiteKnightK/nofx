@@ -223,6 +223,8 @@ export interface TraderConfigData {
 export interface TraderStrategyStatus {
   trader_id: string
   strategy_id: string
+  symbol?: string
+  had_position?: boolean | null
   status: string
   entry_price: number
   quantity: number
